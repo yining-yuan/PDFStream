@@ -1,0 +1,527 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PDFStream - PDF Document Search System</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        
+        .header {
+            background: white;
+            padding: 30px;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            margin-bottom: 30px;
+        }
+        
+        h1 {
+            color: #333;
+            font-size: 32px;
+            margin-bottom: 10px;
+        }
+        
+        .subtitle {
+            color: #666;
+            font-size: 16px;
+        }
+        
+        .stats {
+            display: flex;
+            gap: 20px;
+            margin-top: 20px;
+        }
+        
+        .stat-card {
+            background: #f7fafc;
+            padding: 15px 20px;
+            border-radius: 8px;
+            border-left: 4px solid #667eea;
+        }
+        
+        .stat-label {
+            color: #666;
+            font-size: 14px;
+            margin-bottom: 5px;
+        }
+        
+        .stat-value {
+            color: #333;
+            font-size: 24px;
+            font-weight: bold;
+        }
+        
+        .main-content {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 30px;
+        }
+        
+        .card {
+            background: white;
+            padding: 30px;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+        
+        h2 {
+            color: #333;
+            font-size: 24px;
+            margin-bottom: 20px;
+        }
+        
+        .upload-area {
+            border: 2px dashed #cbd5e0;
+            border-radius: 8px;
+            padding: 40px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+        
+        .upload-area:hover {
+            border-color: #667eea;
+            background: #f7fafc;
+        }
+        
+        .upload-area.dragging {
+            border-color: #667eea;
+            background: #edf2f7;
+        }
+        
+        .upload-icon {
+            font-size: 48px;
+            color: #cbd5e0;
+            margin-bottom: 15px;
+        }
+        
+        input[type="file"] {
+            display: none;
+        }
+        
+        .search-box {
+            width: 100%;
+            padding: 15px;
+            border: 2px solid #e2e8f0;
+            border-radius: 8px;
+            font-size: 16px;
+            margin-bottom: 15px;
+        }
+        
+        .search-box:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+        
+        .btn {
+            background: #667eea;
+            color: white;
+            padding: 12px 24px;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            cursor: pointer;
+            transition: all 0.3s;
+            width: 100%;
+        }
+        
+        .btn:hover {
+            background: #5568d3;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.15);
+        }
+        
+        .btn:disabled {
+            background: #cbd5e0;
+            cursor: not-allowed;
+            transform: none;
+        }
+        
+        .document-list {
+            max-height: 600px;
+            overflow-y: auto;
+        }
+        
+        .document-item {
+            background: #f7fafc;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 10px;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+        
+        .document-item:hover {
+            background: #edf2f7;
+            transform: translateX(5px);
+        }
+        
+        .document-name {
+            font-weight: 600;
+            color: #333;
+            margin-bottom: 5px;
+        }
+        
+        .document-meta {
+            font-size: 14px;
+            color: #666;
+        }
+        
+        .result-item {
+            background: #f7fafc;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 10px;
+            border-left: 4px solid #667eea;
+        }
+        
+        .similarity-score {
+            display: inline-block;
+            background: #667eea;
+            color: white;
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: bold;
+            margin-left: 10px;
+        }
+        
+        .message {
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+        
+        .message.success {
+            background: #c6f6d5;
+            color: #22543d;
+            border-left: 4px solid #38a169;
+        }
+        
+        .message.error {
+            background: #fed7d7;
+            color: #742a2a;
+            border-left: 4px solid #e53e3e;
+        }
+        
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #666;
+        }
+        
+        .spinner {
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #667eea;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 20px auto;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        
+        .keywords {
+            margin-top: 10px;
+        }
+        
+        .keyword-tag {
+            display: inline-block;
+            background: #edf2f7;
+            color: #4a5568;
+            padding: 4px 10px;
+            border-radius: 12px;
+            font-size: 12px;
+            margin: 2px;
+        }
+        
+        @media (max-width: 768px) {
+            .main-content {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>📚 PDFStream</h1>
+            <p class="subtitle">PDF Document Search and Matching System</p>
+            <div class="stats">
+                <div class="stat-card">
+                    <div class="stat-label">Total Documents</div>
+                    <div class="stat-value" id="totalDocs">0</div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="main-content">
+            <div class="card">
+                <h2>📤 Upload PDF</h2>
+                <div id="uploadMessage"></div>
+                <div class="upload-area" id="uploadArea">
+                    <div class="upload-icon">📄</div>
+                    <p>Drag and drop a PDF file here or click to select</p>
+                    <input type="file" id="fileInput" accept=".pdf">
+                </div>
+            </div>
+            
+            <div class="card">
+                <h2>🔍 Search Documents</h2>
+                <div id="searchMessage"></div>
+                <textarea class="search-box" id="searchQuery" placeholder="Enter search keywords or paste text to find similar documents..."></textarea>
+                <button class="btn" id="searchBtn" onclick="searchDocuments()">Search</button>
+                
+                <div id="searchResults" style="margin-top: 20px;"></div>
+            </div>
+        </div>
+        
+        <div class="card" style="margin-top: 30px;">
+            <h2>📋 All Documents</h2>
+            <div id="documentList" class="document-list">
+                <div class="loading">
+                    <div class="spinner"></div>
+                    <p>Loading documents...</p>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        // API base URL
+        const API_URL = '/api';
+        
+        // Load statistics
+        async function loadStats() {
+            try {
+                const response = await fetch(`${API_URL}/stats`);
+                const data = await response.json();
+                if (data.success) {
+                    document.getElementById('totalDocs').textContent = data.stats.total_documents;
+                }
+            } catch (error) {
+                console.error('Error loading stats:', error);
+            }
+        }
+        
+        // Load all documents
+        async function loadDocuments() {
+            try {
+                const response = await fetch(`${API_URL}/documents`);
+                const data = await response.json();
+                
+                const listElement = document.getElementById('documentList');
+                
+                if (data.success && data.documents.length > 0) {
+                    listElement.innerHTML = data.documents.map(doc => `
+                        <div class="document-item" onclick="findSimilar(${doc.id})">
+                            <div class="document-name">${doc.filename}</div>
+                            <div class="document-meta">
+                                📅 ${new Date(doc.upload_date).toLocaleDateString()} | 
+                                📄 ${doc.page_count} pages | 
+                                💾 ${(doc.file_size / 1024).toFixed(2)} KB
+                            </div>
+                            <div class="keywords">
+                                ${doc.keywords.slice(0, 10).map(kw => `<span class="keyword-tag">${kw}</span>`).join('')}
+                            </div>
+                        </div>
+                    `).join('');
+                } else {
+                    listElement.innerHTML = '<div class="loading"><p>No documents uploaded yet</p></div>';
+                }
+            } catch (error) {
+                console.error('Error loading documents:', error);
+                document.getElementById('documentList').innerHTML = '<div class="loading"><p>Error loading documents</p></div>';
+            }
+        }
+        
+        // Upload file
+        const uploadArea = document.getElementById('uploadArea');
+        const fileInput = document.getElementById('fileInput');
+        
+        uploadArea.addEventListener('click', () => fileInput.click());
+        
+        uploadArea.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            uploadArea.classList.add('dragging');
+        });
+        
+        uploadArea.addEventListener('dragleave', () => {
+            uploadArea.classList.remove('dragging');
+        });
+        
+        uploadArea.addEventListener('drop', (e) => {
+            e.preventDefault();
+            uploadArea.classList.remove('dragging');
+            
+            const files = e.dataTransfer.files;
+            if (files.length > 0) {
+                uploadFile(files[0]);
+            }
+        });
+        
+        fileInput.addEventListener('change', (e) => {
+            if (e.target.files.length > 0) {
+                uploadFile(e.target.files[0]);
+            }
+        });
+        
+        async function uploadFile(file) {
+            const messageDiv = document.getElementById('uploadMessage');
+            
+            if (!file.name.toLowerCase().endsWith('.pdf')) {
+                messageDiv.innerHTML = '<div class="message error">Please select a PDF file</div>';
+                return;
+            }
+            
+            const formData = new FormData();
+            formData.append('file', file);
+            
+            messageDiv.innerHTML = '<div class="loading"><div class="spinner"></div><p>Processing PDF...</p></div>';
+            
+            try {
+                const response = await fetch(`${API_URL}/upload`, {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    messageDiv.innerHTML = `<div class="message success">✓ Successfully uploaded and processed "${data.filename}"<br>Extracted ${data.keywords_extracted} keywords from ${data.page_count} pages</div>`;
+                    loadDocuments();
+                    loadStats();
+                    fileInput.value = '';
+                } else {
+                    messageDiv.innerHTML = `<div class="message error">✗ Error: ${data.error}</div>`;
+                }
+            } catch (error) {
+                messageDiv.innerHTML = `<div class="message error">✗ Upload failed: ${error.message}</div>`;
+            }
+        }
+        
+        // Search documents
+        async function searchDocuments() {
+            const query = document.getElementById('searchQuery').value.trim();
+            const resultsDiv = document.getElementById('searchResults');
+            const messageDiv = document.getElementById('searchMessage');
+            
+            if (!query) {
+                messageDiv.innerHTML = '<div class="message error">Please enter search text</div>';
+                return;
+            }
+            
+            messageDiv.innerHTML = '';
+            resultsDiv.innerHTML = '<div class="loading"><div class="spinner"></div><p>Searching...</p></div>';
+            
+            try {
+                const response = await fetch(`${API_URL}/search`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ query: query })
+                });
+                
+                const data = await response.json();
+                
+                if (data.success && data.results.length > 0) {
+                    resultsDiv.innerHTML = '<h3 style="margin-bottom: 15px; color: #333;">Search Results</h3>' +
+                        data.results.map(doc => `
+                            <div class="result-item">
+                                <div class="document-name">
+                                    ${doc.filename}
+                                    <span class="similarity-score">${(doc.similarity_score * 100).toFixed(1)}% match</span>
+                                </div>
+                                <div class="document-meta">
+                                    📅 ${new Date(doc.upload_date).toLocaleDateString()} | 
+                                    📄 ${doc.page_count} pages
+                                </div>
+                                <div class="keywords">
+                                    ${doc.keywords.slice(0, 8).map(kw => `<span class="keyword-tag">${kw}</span>`).join('')}
+                                </div>
+                            </div>
+                        `).join('');
+                } else {
+                    resultsDiv.innerHTML = '<div class="loading"><p>No similar documents found</p></div>';
+                }
+            } catch (error) {
+                resultsDiv.innerHTML = `<div class="message error">Search failed: ${error.message}</div>`;
+            }
+        }
+        
+        // Find similar documents
+        async function findSimilar(documentId) {
+            const resultsDiv = document.getElementById('searchResults');
+            const messageDiv = document.getElementById('searchMessage');
+            
+            messageDiv.innerHTML = '';
+            resultsDiv.innerHTML = '<div class="loading"><div class="spinner"></div><p>Finding similar documents...</p></div>';
+            
+            try {
+                const response = await fetch(`${API_URL}/search`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ document_id: documentId })
+                });
+                
+                const data = await response.json();
+                
+                if (data.success && data.results.length > 0) {
+                    resultsDiv.innerHTML = '<h3 style="margin-bottom: 15px; color: #333;">Similar Documents</h3>' +
+                        data.results.map(doc => `
+                            <div class="result-item">
+                                <div class="document-name">
+                                    ${doc.filename}
+                                    <span class="similarity-score">${(doc.similarity_score * 100).toFixed(1)}% similar</span>
+                                </div>
+                                <div class="document-meta">
+                                    📅 ${new Date(doc.upload_date).toLocaleDateString()} | 
+                                    📄 ${doc.page_count} pages
+                                </div>
+                                <div class="keywords">
+                                    ${doc.keywords.slice(0, 8).map(kw => `<span class="keyword-tag">${kw}</span>`).join('')}
+                                </div>
+                            </div>
+                        `).join('');
+                } else {
+                    resultsDiv.innerHTML = '<div class="loading"><p>No similar documents found</p></div>';
+                }
+            } catch (error) {
+                resultsDiv.innerHTML = `<div class="message error">Search failed: ${error.message}</div>`;
+            }
+        }
+        
+        // Initialize
+        loadStats();
+        loadDocuments();
+        
+        // Refresh every 30 seconds
+        setInterval(() => {
+            loadStats();
+        }, 30000);
+    </script>
+</body>
+</html>
