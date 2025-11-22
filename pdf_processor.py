@@ -60,10 +60,10 @@ class PDFProcessor:
                         page_text = page.extract_text()
                         if page_text:
                             text += page_text + "\n"
-                    except Exception as e:
+                    except (PyPDF2.errors.PdfReadError, PyPDF2.errors.PyPdfError) as e:
                         print(f"Error extracting text from page: {e}")
                         continue
-        except Exception as e:
+        except (PyPDF2.errors.PdfReadError, FileNotFoundError, PermissionError) as e:
             print(f"Error reading PDF file: {e}")
             raise
         

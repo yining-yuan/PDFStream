@@ -136,9 +136,11 @@ class DatabaseManager:
         """
         
         if limit:
-            query += f" LIMIT {limit}"
+            query += " LIMIT ?"
+            cursor.execute(query, (limit,))
+        else:
+            cursor.execute(query)
         
-        cursor.execute(query)
         rows = cursor.fetchall()
         conn.close()
         

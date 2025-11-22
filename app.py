@@ -13,7 +13,10 @@ from ml_matcher import MLMatcher
 
 # Initialize Flask app
 app = Flask(__name__)
-app.config['SECRET_KEY'] = 'pdfstream-secret-key-change-in-production'
+app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY') or 'dev-key-change-in-production'
+if app.config['SECRET_KEY'] == 'dev-key-change-in-production' and not os.environ.get('FLASK_ENV') == 'development':
+    import warnings
+    warnings.warn("WARNING: Using default SECRET_KEY. Set SECRET_KEY environment variable for production!")
 app.config['UPLOAD_FOLDER'] = 'uploads'
 app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50MB max file size
 CORS(app)
@@ -94,13 +97,17 @@ def upload_pdf():
         filename = secure_filename(file.filename)
         filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
         
-        # Handle duplicate filenames
+        # Handle duplicate filenames (with a maximum of 1000 attempts)
         base, ext = os.path.splitext(filepath)
         counter = 1
-        while os.path.exists(filepath):
+        max_attempts = 1000
+        while os.path.exists(filepath) and counter < max_attempts:
             filepath = f"{base}_{counter}{ext}"
             filename = os.path.basename(filepath)
             counter += 1
+        
+        if os.path.exists(filepath):
+            return jsonify({'success': False, 'error': 'Too many files with the same name'}), 400
         
         file.save(filepath)
         
