@@ -234,4 +234,10 @@ def get_stats():
 if __name__ == '__main__':
     print("Starting PDFStream application...")
     print("Access the web interface at http://localhost:5000")
-    app.run(debug=True, host='0.0.0.0', port=5000)
+    
+    # Use debug mode only in development
+    debug_mode = os.environ.get('FLASK_DEBUG', 'False').lower() == 'true'
+    if debug_mode:
+        print("WARNING: Running in DEBUG mode - not suitable for production!")
+    
+    app.run(debug=debug_mode, host='0.0.0.0', port=5000)
