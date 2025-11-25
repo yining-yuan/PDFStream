@@ -30,7 +30,7 @@ class PDFProcessor:
         except LookupError:
             self._ensure_nltk_data()
             self.stop_words = set(stopwords.words('english'))
-        # Domain-specific stopword extension
+        # 1125: Domain-specific stopword extension
         self.domain_stopwords = {
             'paper','method','methods','result','results','system','approach','study','analysis','data','new','novel','using','based'
         }
@@ -78,21 +78,21 @@ class PDFProcessor:
             with open(pdf_path, 'rb') as file:
                 pdf_reader = PyPDF2.PdfReader(file)
                 page_count = len(pdf_reader.pages)
-                
+
                 for page in pdf_reader.pages:
                     try:
                         page_text = page.extract_text()
                         if page_text:
-                            # Sanitize to remove/replace surrogate code points that break utf-8 encoding
                             cleaned = self._sanitize_surrogates(page_text)
                             text += cleaned + "\n"
                     except (PyPDF2.errors.PdfReadError, PyPDF2.errors.PyPdfError) as e:
                         print(f"Error extracting text from page: {e}")
                         continue
         except (PyPDF2.errors.PdfReadError, FileNotFoundError, PermissionError) as e:
+            # Requirement: always return (text, page_count) even on errors.
             print(f"Error reading PDF file: {e}")
-            raise
-        
+            return "", 0
+
         return text.strip(), page_count
 
     def _sanitize_surrogates(self, s: str) -> str:
@@ -202,11 +202,12 @@ class PDFProcessor:
             if noise_regex.search(p2):
                 return None
 
-            # Token-level cleaning to handle “Agentic Systems ACM Reference Format: Martin Weiss”
+
             tokens = p2.split()
             if not tokens:
                 return None
-
+            
+            # 1125: Define stop tokens indicating end of keyword phrase
             STOP_TOKENS = {
                 # publisher / meta words that mean we've left the keyword list
                 "acm",
@@ -478,6 +479,7 @@ class PDFProcessor:
         file_size = os.path.getsize(pdf_path)
         filename = os.path.basename(pdf_path)
         
+        # 1125 : Return structured result
         return {
             'filename': filename,
             'filepath': pdf_path,

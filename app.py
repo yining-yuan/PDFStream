@@ -5,10 +5,12 @@ Main application file that provides REST API and web interface
 
 import os
 import re
+import mimetypes
 from flask import Flask, request, jsonify, render_template, send_from_directory
 from flask_cors import CORS
 from werkzeug.utils import secure_filename
 from database import DatabaseManager
+from config import Config
 from pdf_processor import PDFProcessor
 from ml_matcher import MLMatcher
 
@@ -19,8 +21,8 @@ app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY') or 'dev-key-change-in-pr
 if app.config['SECRET_KEY'] == 'dev-key-change-in-production' and not os.environ.get('FLASK_ENV') == 'development':
     import warnings
     warnings.warn("WARNING: Using default SECRET_KEY. Set SECRET_KEY environment variable for production!")
-app.config['UPLOAD_FOLDER'] = 'uploads'
-app.config['MAX_CONTENT_LENGTH'] = 700 * 1024 * 1024  # 700MB max file size
+app.config['UPLOAD_FOLDER'] = Config.UPLOAD_FOLDER
+app.config['MAX_CONTENT_LENGTH'] = Config.MAX_CONTENT_LENGTH  # unified 700MB limit
 
 # Ensure upload folder exists
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
@@ -93,6 +95,9 @@ def upload_pdf():
         
         if not file.filename.lower().endswith('.pdf'):
             return jsonify({'success': False, 'error': 'Only PDF files are allowed'}), 400
+        # Basic mimetype check (best-effort; some browsers may send application/octet-stream)
+        if file.mimetype and file.mimetype not in ('application/pdf','application/x-pdf','application/octet-stream'):
+            return jsonify({'success': False, 'error': f'Unexpected MIME type: {file.mimetype}'}), 400
         
         # Save file
         filename = secure_filename(file.filename)
@@ -137,6 +142,7 @@ def upload_pdf():
             'document_id': doc_id,
             'filename': filename,
             'page_count': processed_data['page_count'],
+            'file_size': processed_data['file_size'],
             'keywords_extracted': len(processed_data['keywords']),
             'keywords': processed_data.get('keywords', []),
             'explicit_keywords': processed_data.get('keywords_source') == 'explicit' and processed_data.get('keywords', []) or [],
@@ -285,7 +291,8 @@ def update_keywords(doc_id):
         if not updated:
             return jsonify({'success': False, 'error': 'Update failed (document may not exist)'}), 404
         doc = db.get_document(doc_id)
-        # Do not refit ML matcher (text unchanged), but could refresh keyword-based caches if any.
+        # Refresh ML matcher so keyword-driven re-weighting future features can use updated keywords if integrated.
+        refresh_ml_matcher()
         return jsonify({'success': True, 'document_id': doc_id, 'keywords': doc['keywords'], 'count': len(doc['keywords'])})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
@@ -316,6 +323,8 @@ def reprocess_keywords():
                 if ok:
                     updated.append({'document_id': doc['id'], 'count': len(advanced_keywords)})
                     processed_count += 1
+        # Refresh ML matcher after reprocessing
+        refresh_ml_matcher()
         return jsonify({'success': True, 'updated': updated, 'processed': processed_count})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
@@ -399,19 +408,36 @@ def upload_batch():
 
 @app.route('/api/stats', methods=['GET'])
 def get_stats():
-    """Get system statistics"""
+    """Get system statistics including aggregate metrics."""
     try:
-        document_count = db.get_document_count()
-        
-        return jsonify({
-            'success': True,
-            'stats': {
-                'total_documents': document_count
+        documents = db.get_all_documents()
+        total = len(documents)
+        if total == 0:
+            stats = {
+                'total_documents': 0,
+                'average_file_size': 0,
+                'average_page_count': 0,
+                'last_upload_date': None
             }
-        })
-    
+        else:
+            sizes = [d.get('file_size',0) or 0 for d in documents]
+            pages = [d.get('page_count',0) or 0 for d in documents]
+            upload_dates = [d.get('upload_date') for d in documents if d.get('upload_date')]
+            last_upload = max(upload_dates) if upload_dates else None
+            stats = {
+                'total_documents': total,
+                'average_file_size': int(sum(sizes)/total) if sizes else 0,
+                'average_page_count': round(sum(pages)/total,2) if pages else 0,
+                'last_upload_date': last_upload
+            }
+        return jsonify({'success': True, 'stats': stats})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/health', methods=['GET'])
+def health_check():
+    """Simple health check endpoint for readiness probes."""
+    return jsonify({'success': True, 'status': 'ok'})
 
 
 if __name__ == '__main__':

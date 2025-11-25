@@ -12,7 +12,8 @@ class Config:
     
     # Upload settings
     UPLOAD_FOLDER = os.environ.get('UPLOAD_FOLDER') or 'uploads'
-    MAX_CONTENT_LENGTH = 50 * 1024 * 1024  # 50MB max file size
+    # Unified max upload size (700MB) aligned with app.py configuration
+    MAX_CONTENT_LENGTH = 700 * 1024 * 1024  # 700MB max file size
     ALLOWED_EXTENSIONS = {'pdf'}
     
     # Database settings
