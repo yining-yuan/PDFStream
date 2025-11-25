@@ -1,6 +1,6 @@
 # PDFStream API Documentation
 
-This document explains every available API endpoint, why it exists, and how to use it. It is written for readers without a deep technical background. You can think of the system as three layers working together:
+This document explains every available API endpoint, why it exists, and how to use it. We can think of the system as three layers working together:
 
 1. Storage (Database) – remembers each PDF's text, size, pages, and extracted keywords so you do not have to re‑process files every time.
 2. Processing (Backend & ML) – extracts readable text from PDFs, identifies meaningful keywords, and calculates how similar documents are to a query or to each other.
@@ -396,12 +396,12 @@ async function keywordSearch(raw) {
 ```
 
 ---
-## How Similarity Works (Plain Language)
+## How Similarity Works
 Each document is converted into a numeric profile describing which words and short phrases it contains and how important they are. Importance is higher if a term appears frequently in one document but not in most others (TF‑IDF). When you search, your query becomes a temporary “mini‑document” and we measure how close its profile is to each stored document. The closeness is the similarity score.
 
-## Keyword Extraction Logic (Priority Order)
+## Keyword Extraction Logic
 1. Explicit List – If authors wrote “Keywords:” we capture those lines directly.
-2. Advanced Extraction – Uses statistical term importance, word form reduction (lemmatization), phrase grouping, and collocation detection to propose multi‑word concepts.
+2. Advanced Extraction – Uses statistical term importance, word form reduction (lemmatisation), phrase grouping, and collocation detection to propose multi‑word concepts.
 3. Simple Frequency – Counts common words (excluding ignored words) when advanced methods fail.
 
 Understanding this hierarchy helps interpret results: “explicit” means human‑chosen; “advanced” means machine‑derived with linguistic analysis; “extracted” means plain counting.

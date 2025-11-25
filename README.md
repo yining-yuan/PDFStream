@@ -1,4 +1,4 @@
-# PDFStream – Understand, Organize, and Explore PDF Documents
+# PDFStream – Understand, Organise, and Explore PDF Documents
 
 PDFStream is a self‑contained system that lets you build a searchable library of PDFs (e.g., research papers, reports, manuals) and discover related documents quickly. This README explains not only how to run the software but also why each component exists—using plain, non‑technical language where possible.
 
@@ -23,8 +23,21 @@ PDFStream ingests each PDF, pulls out readable text, extracts meaningful keyword
 - View aggregate statistics (counts, averages, latest upload date).
 - Check that the system is healthy with a simple endpoint.
 
+### 2.1 Advanced Feature Summary
+| Feature | What It Does | Why It Matters |
+|---------|--------------|----------------|
+| Explicit Keyword Detection | Detects author-provided "Keywords:" blocks | Preserves human intent and domain wording |
+| Advanced Keyword Extraction | Uses TF‑IDF, phrases, collocations, lemmatisation | Produces richer thematic descriptors |
+| Simple Frequency Fallback | Counts frequent non‑stop words | Guarantees keywords even if text is difficult |
+| Approximate Keyword Search | Matches keyword substrings case-insensitively | Quick filtering without full ML similarity |
+| Batch Upload | Processes many PDFs sequentially (up to 500) | High-volume ingestion |
+| Reprocess Keywords | Refreshes machine-derived keywords after growth | Raises quality as corpus evolves |
+| Similarity Search | Finds thematically related documents | Accelerates literature/precedent discovery |
+| Manual Keyword Editing | Lets user curate keyword list | Human refinement of machine suggestions |
+| Stats Endpoint | Aggregates counts & averages | Operational visibility |
+
 ---
-## 3. How the System Thinks (The Rationale)
+## 3. How the System Thinks 
 
 ### 3.1 Database (SQLite)
 Instead of re‑reading and re‑processing PDFs every time you search, the system stores results once in a lightweight local database file (`pdfstream.db`). This file holds:
@@ -42,14 +55,14 @@ Instead of re‑reading and re‑processing PDFs every time you search, the syst
 Because everything lives in a single file, backup is as easy as copying `pdfstream.db`.
 
 ### 3.2 Backend (Flask)
-The backend is the “air traffic controller.” It:
+The backend:
 1. Accepts uploads, validates they are PDFs, and stores them.
 2. Calls the processing pipeline to extract text and keywords.
 3. Updates the similarity model each time documents change.
 4. Serves API responses to the web interface or external scripts.
 
 ### 3.3 Frontend (HTML / CSS / JavaScript)
-The provided web page lets you:
+The provided web page:
 - Drag and drop PDFs to upload.
 - View all stored documents quickly (without loading full text).
 - Run searches and examine similarity scores.
@@ -57,10 +70,10 @@ The provided web page lets you:
 - Edit keywords in a modal dialog.
 
 ### 3.4 Keyword Extraction Logic
-Keywords are the short list of terms or phrases that summarize content. We use a priority chain:
-1. **Explicit:** If the PDF includes a “Keywords:” block, we trust the authors and store those.
-2. **Advanced:** If no explicit list exists, we analyze term importance (TF‑IDF), noun phrases, and multi‑word expressions (collocations). We also lemmatize (reduce words to base forms) to group variations (e.g., “coordinates,” “coordination”).
-3. **Extracted:** Only if advanced methods fail, we fall back to simple word frequency filtering out very common words.
+Keywords are the short list of terms or phrases that summarise content. We use a priority chain:
+1. **Explicit:** If the PDF includes a “Keywords:” block, we store those.
+2. **Advanced:** If no explicit list exists, we analyse term importance (TF‑IDF), noun phrases, and multi‑word expressions (collocations). We also lemmatise (reduce words to base forms) to group variations (e.g., “coordinates,” “coordination”).
+3. **Extracted:** Only if advanced methods fail, we fall back to simple word frequency filtering while excluding very common words.
 
 ### 3.5 ML Similarity (TF‑IDF + Cosine Similarity)
 - **TF‑IDF (Term Frequency–Inverse Document Frequency):** Measures how important a word is to a specific document compared to the entire collection.
@@ -93,7 +106,7 @@ python app.py
 Open: `http://localhost:5000`
 
 ---
-## 5. Daily Use Workflow
+## 5. Use Workflow
 1. Upload PDFs (single or batch).
 2. Browse documents; spot duplicates or outdated items.
 3. Use text search to find related materials.
@@ -101,8 +114,23 @@ Open: `http://localhost:5000`
 5. After a large import, run keyword reprocessing for better phrase coverage.
 6. Periodically check `/api/stats` and back up `pdfstream.db`.
 
+### Common Real-World Use Cases
+1. **Research Paper Management** – Upload papers across topics; when reading a new one, upload it to surface related prior work.
+2. **Legal Document Analysis** – Store case documents; find precedents by similarity or keyword, accelerating review.
+3. **Technical Documentation** – Centralise product specifications; search for protocols or components quickly.
+4. **Content & Report Collections** – Discover thematic clusters inside large sets of internal reports.
+
+### Web Interface Actions
+1. Drag & drop a PDF or click the upload area.
+2. Observe status messages while processing occurs.
+3. See document appear in the list (summary only, not full text).
+4. Click a document to trigger similarity search (if implemented in UI) or view details.
+5. Use the text search box for thematic queries.
+6. Open a PDF in a new browser tab via its link.
+7. Edit keywords in the modal when human-curated adjustments are desired.
+
 ---
-## 6. API Overview (Human-Friendly)
+## 6. API Overview
 | Action | Endpoint | Notes |
 |--------|----------|-------|
 | Check system health | `GET /api/health` | Returns `{status: "ok"}` |
@@ -178,14 +206,26 @@ curl http://localhost:5000/api/stats
 	- `extracted`: Simple frequency fallback.
 - **keywords_extracted**: Count of keywords stored for that document.
 
-Interpreting these fields helps you decide trust level. Explicit lists usually reflect authors’ intention; advanced ones may introduce nuanced phrases you hadn’t considered.
+<!-- ### Additional Result Elements (If Present)
+- **metadata** (upload date, file size, page count): Helps gauge recency & length.
+- **match_count / matched_keywords** (from approximate keyword search): Indicates how many stored keywords partially matched your query, useful for quick filtering. -->
 
 ---
 ## 9. Performance & Limits
-- Maximum single file size: 700MB.
-- Maximum files per batch: 500.
+- Maximum single file size: 700MB  (can increase).
+- Maximum files per batch: 500 (can increase).
 - Large scanned/image-only PDFs contain little extractable text; similarity and keywords may be sparse.
-- After heavy document churn (additions/deletions), searches may take slightly longer while the model updates, but this is automatic.
+
+<!-- ### Recommended Ranges (Best Practices)
+- **Document count:** Works well from a few dozen up to ~10,000 before considering incremental indexing strategies.
+- **Typical file size:** Prefer under ~50MB for faster ingestion (maximum still 700MB).
+- **Page count sweet spot:** 5–100 pages yield rich enough text without overwhelming processing. -->
+
+### Improving Search Quality
+1. Use descriptive multi-word queries (e.g., "distributed task allocation" rather than "task").
+2. Upload complete documents (partial drafts may reduce keyword precision).
+3. Periodically reprocess keywords after large batch additions.
+4. Manually prune outdated or redundant documents.
 
 ---
 ## 10. Maintenance Tips
@@ -196,12 +236,41 @@ Interpreting these fields helps you decide trust level. Explicit lists usually r
 | Reprocess keywords occasionally | Captures new phrase patterns as corpus evolves. |
 | Monitor stats | Detect unusual growth or missing uploads. |
 
+### Configuration & Environment Variables
+You can customize deployment via `config.py` or environment variables:
+| Variable | Purpose | Example |
+|----------|---------|---------|
+| `SECRET_KEY` | Flask session security (change in production) | `export SECRET_KEY="change_me"` |
+| `UPLOAD_FOLDER` | Where PDFs are stored | `export UPLOAD_FOLDER="/data/pdfs"` |
+| `DATABASE_PATH` | SQLite file location | `export DATABASE_PATH="/data/pdfstream.db"` |
+| `PORT` | Server port | `export PORT=5000` |
+| `HOST` | Bind host (default 0.0.0.0) | `export HOST=0.0.0.0` |
+
+### System Requirements
+| Level | Spec |
+|-------|------|
+| Minimum | Python 3.8+, 2GB RAM, 1GB disk |
+| Recommended | Python 3.10+, 4GB RAM, 10GB disk (growing corpus) |
+
+### Security Considerations (Production)
+1. Set a strong `SECRET_KEY`.
+2. Serve behind HTTPS (reverse proxy like Nginx + certs).
+3. Add authentication/authorization for sensitive collections.
+4. Adjust file size limits to match operational needs.
+5. Use a production WSGI server (e.g., `gunicorn`, `uwsgi`).
+
+Example production start:
+```bash
+gunicorn -w 4 -b 0.0.0.0:5000 app:app
+```
+
 ---
-## 11. Extending the System (Future Ideas)
+## 11. Extending the System
 - Integrate OCR for scanned images.
-- Add tagging or categorization fields beyond keywords.
+- Add tagging or categorisation fields beyond keywords.
 - Implement pagination for large document lists.
 - Provide export of keyword summaries to CSV.
+- Personalisation? 
 
 ---
 ## 12. Technology Summary
@@ -210,7 +279,7 @@ Interpreting these fields helps you decide trust level. Explicit lists usually r
 | Database | SQLite | Zero configuration, single-file backups. |
 | Server | Flask | Simple, readable routing for a modest API. |
 | ML | Scikit-learn TF‑IDF + cosine | Proven text similarity method with good accuracy for thematic grouping. |
-| NLP | NLTK | Mature library for tokenization, POS tagging, lemmatization. |
+| NLP | NLTK | Mature library for tokenisation, POS tagging, lemmatisation. |
 | PDF Parsing | PyPDF2 | Widely used, supports text extraction for text-based PDFs. |
 | Frontend | Vanilla HTML/CSS/JS | Lightweight, easy to modify. |
 
@@ -223,13 +292,18 @@ Interpreting these fields helps you decide trust level. Explicit lists usually r
 | Similarity seems low for all | Small corpus → weak differentiation | Upload more documents; reprocess keywords. |
 | Server won’t start | Port 5000 in use | Stop other service or change port with env var. |
 | Slow batch upload | Extremely large PDFs | Split batch or remove oversized files. |
+| No search results | Too few documents or overly narrow query | Broaden query or upload more documents. |
+| PDF not processing | Scanned/image-only (no text layer) | OCR the PDF before upload. |
 
 ---
-## 14. Licensing
-MIT License – You may use, modify, and distribute with attribution.
+
+### Support & Help
+1. Review this README and `API.md` examples.
+2. Check troubleshooting table.
+3. Open a GitHub issue for unresolved problems.
 
 ---
-## 15. Quick Reference Commands
+## 14. Quick Reference Commands
 ```bash
 # Start (script)
 ./start.sh
@@ -242,7 +316,4 @@ cp pdfstream.db pdfstream_backup_$(date +%Y%m%d).db
 ```
 
 ---
-## 16. Final Notes
-PDFStream’s value grows with the richness of its corpus. Upload a variety of documents, curate keywords where needed, and leverage advanced extraction to surface multi‑word concepts. Treat keywords as a living index—refine them to sharpen future discovery.
 
-Enjoy exploring your document collection.
