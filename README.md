@@ -54,6 +54,24 @@ Instead of re‑reading and re‑processing PDFs every time you search, the syst
 
 Because everything lives in a single file, backup is as easy as copying `pdfstream.db`.
 
+#### Database Design & Indexing Rationale
+| Aspect | Rationale |
+|--------|-----------|
+| Single SQLite file | Portable; atomic backup by copying one file; zero external service setup. |
+| Separate `document_keywords` table | Normalises keywords for search; avoids scanning large JSON blobs for filtering; supports frequency metadata. |
+| JSON `keywords` column in `documents` | Fast retrieval for display without joins; preserves original casing & ordering. |
+| Lowercased index keywords | Enables case‑insensitive comparison while keeping human‑readable original variants in JSON. |
+| `idx_keywords` index | Speeds exact matches and prefix LIKE (e.g. `keyword LIKE 'coord%'`). Full `%token%` patterns still require scan; future enhancement could add FTS5 or trigram indexing. |
+| Explicit DELETE + ON DELETE CASCADE | Table declares cascade for safety, but code explicitly deletes keyword rows for clarity, deterministic row counts, and backward compatibility with older schema migrations. |
+| In‑memory TF‑IDF similarity | Avoids adding full‑text module; keeps footprint minimal; recomputed vectoriser after corpus changes. |
+| Approximate substring search | Simple LIKE approach keeps logic transparent; prepared statements mitigate injection; upgrade path: FTS5 or external search engine for large corpora. |
+| Potential future improvements | Add FTS5 virtual table, store embeddings for semantic search, introduce incremental indexing for >10k documents. |
+
+Security & Integrity Notes:
+- All parameter substitution uses SQLite placeholders (`?`) to avoid SQL injection.
+- Deleting a document first clears keyword index entries explicitly then removes the document row, ensuring no orphaned search artefacts remain.
+- Large text fields are kept in the `documents` table to simplify backup; if size grows excessively consider moving raw text to a separate table or enabling compression.
+
 ### 2.2 Backend (Flask)
 The backend:
 1. Accepts uploads, validates they are PDFs, and stores them.
@@ -295,6 +313,7 @@ DELETE FROM document_keywords WHERE document_id = ?;
 -- Remove the document record
 DELETE FROM documents WHERE id = ?;
 ```
+Cascade Behaviour: The `document_keywords` table references `documents(id)` with `ON DELETE CASCADE`. The explicit DELETE is retained for clarity and accurate affected row accounting; if the schema evolves (e.g. extra dependent tables) the intention remains obvious.
 
 ### 6.9 Approximate Keyword Search
 ```bash
@@ -318,6 +337,7 @@ LIMIT ?;
 ```
 
 The actual query is built at runtime based on cleaned tokens; parameters are bound safely with placeholders to avoid injection.
+Tokenisation & Performance: Raw query text is split on non‑alphanumeric boundaries; very short tokens are ignored (<2 chars) to reduce noise. The resulting OR chain of LIKE clauses is acceptable for small/medium corpora; for very large sets consider adding a full‑text index (FTS5) or a separate search service. Input is never concatenated directly—placeholders ensure safe binding.
 
 ---
 ## 7. Understanding Results
