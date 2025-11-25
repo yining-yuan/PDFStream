@@ -63,7 +63,6 @@ Because everything lives in a single file, backup is as easy as copying `pdfstre
 | Lowercased index keywords | Enables case‑insensitive comparison while keeping human‑readable original variants in JSON. |
 | `idx_keywords` index | Speeds exact matches and prefix LIKE (e.g. `keyword LIKE 'coord%'`). Full `%token%` patterns still require scan; future enhancement could add FTS5 or trigram indexing. |
 | Explicit DELETE + ON DELETE CASCADE | Table declares cascade for safety, but code explicitly deletes keyword rows for clarity, deterministic row counts, and backward compatibility with older schema migrations. |
-| In‑memory TF‑IDF similarity | Avoids adding full‑text module; keeps footprint minimal; recomputed vectoriser after corpus changes. |
 | Approximate substring search | Simple LIKE approach keeps logic transparent; prepared statements mitigate injection; upgrade path: FTS5 or external search engine for large corpora. |
 | Potential future improvements | Add FTS5 virtual table, store embeddings for semantic search, introduce incremental indexing for >10k documents. |
 
