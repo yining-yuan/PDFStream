@@ -60,10 +60,19 @@ class DatabaseManager:
         """)
         
         conn.commit()
+        # Migration: add keywords_source column if missing
+        cursor.execute("PRAGMA table_info(documents)")
+        cols = [row[1] for row in cursor.fetchall()]
+        if 'keywords_source' not in cols:
+            try:
+                cursor.execute("ALTER TABLE documents ADD COLUMN keywords_source TEXT")
+                conn.commit()
+            except Exception:
+                pass
         conn.close()
     
     def add_document(self, filename: str, filepath: str, file_size: int, 
-                     page_count: int, text_content: str, keywords: List[str]) -> int:
+                     page_count: int, text_content: str, keywords: List[str], keywords_source: str = 'extracted') -> int:
         """Add a new document to the database"""
         conn = self.get_connection()
         cursor = conn.cursor()
@@ -73,16 +82,21 @@ class DatabaseManager:
         
         cursor.execute("""
             INSERT INTO documents 
-            (filename, filepath, upload_date, file_size, page_count, text_content, keywords, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """, (filename, filepath, now, file_size, page_count, text_content, keywords_json, now))
+            (filename, filepath, upload_date, file_size, page_count, text_content, keywords, created_at, keywords_source)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (filename, filepath, now, file_size, page_count, text_content, keywords_json, now, keywords_source))
         
         document_id = cursor.lastrowid
         
         # Add keywords to separate table
+        # Build frequency map using lowercase for indexing/search, but keep
+        # original-case keywords in the documents table JSON for display.
         keyword_freq = {}
         for keyword in keywords:
-            keyword_freq[keyword] = keyword_freq.get(keyword, 0) + 1
+            k_lc = (keyword or '').lower()
+            if not k_lc:
+                continue
+            keyword_freq[k_lc] = keyword_freq.get(k_lc, 0) + 1
         
         for keyword, freq in keyword_freq.items():
             cursor.execute("""
@@ -101,8 +115,8 @@ class DatabaseManager:
         cursor = conn.cursor()
         
         cursor.execute("""
-            SELECT id, filename, filepath, upload_date, file_size, page_count, 
-                   text_content, keywords, created_at
+                 SELECT id, filename, filepath, upload_date, file_size, page_count, 
+                     text_content, keywords, created_at, keywords_source
             FROM documents WHERE id = ?
         """, (document_id,))
         
@@ -119,7 +133,8 @@ class DatabaseManager:
                 'page_count': row[5],
                 'text_content': row[6],
                 'keywords': json.loads(row[7]) if row[7] else [],
-                'created_at': row[8]
+                'created_at': row[8],
+                'keywords_source': row[9] if len(row) > 9 else 'extracted'
             }
         return None
     
@@ -129,8 +144,8 @@ class DatabaseManager:
         cursor = conn.cursor()
         
         query = """
-            SELECT id, filename, filepath, upload_date, file_size, page_count, 
-                   text_content, keywords, created_at
+                 SELECT id, filename, filepath, upload_date, file_size, page_count, 
+                     text_content, keywords, created_at, keywords_source
             FROM documents
             ORDER BY created_at DESC
         """
@@ -155,7 +170,8 @@ class DatabaseManager:
                 'page_count': row[5],
                 'text_content': row[6],
                 'keywords': json.loads(row[7]) if row[7] else [],
-                'created_at': row[8]
+                'created_at': row[8],
+                'keywords_source': row[9] if len(row) > 9 else 'extracted'
             })
         
         return documents
@@ -225,3 +241,75 @@ class DatabaseManager:
         count = cursor.fetchone()[0]
         conn.close()
         return count
+
+    def get_all_texts(self) -> List[str]:
+        """Return list of all non-empty document text_content strings for corpus-level analysis."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT text_content FROM documents WHERE text_content IS NOT NULL AND LENGTH(text_content) > 0")
+        rows = cursor.fetchall()
+        conn.close()
+        return [r[0] for r in rows if r and r[0]]
+
+    def update_document_keywords(self, document_id: int, keywords: List[str]) -> bool:
+        """Update keywords for a document, replacing JSON list and keyword index.
+        Preserves original casing in documents table; indexes lowercase.
+        """
+        if not isinstance(keywords, list):
+            return False
+        # Normalize incoming list: strip, remove empties, dedupe preserving order
+        cleaned = []
+        seen = set()
+        for k in keywords:
+            if not isinstance(k, str):
+                continue
+            t = k.strip()
+            if not t:
+                continue
+            tl = t.lower()
+            if tl in seen:
+                continue
+            seen.add(tl)
+            cleaned.append(t)
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        try:
+            # Verify document exists
+            cursor.execute("SELECT id FROM documents WHERE id = ?", (document_id,))
+            if not cursor.fetchone():
+                conn.close()
+                return False
+            # Update documents table JSON field
+            cursor.execute("UPDATE documents SET keywords = ? WHERE id = ?", (json.dumps(cleaned), document_id))
+            # Replace keyword index rows
+            cursor.execute("DELETE FROM document_keywords WHERE document_id = ?", (document_id,))
+            freq = {}
+            for k in cleaned:
+                kl = k.lower()
+                freq[kl] = freq.get(kl, 0) + 1
+            for kw_lc, f in freq.items():
+                cursor.execute("INSERT INTO document_keywords (document_id, keyword, frequency) VALUES (?, ?, ?)", (document_id, kw_lc, f))
+            conn.commit()
+            conn.close()
+            return True
+        except Exception:
+            conn.rollback()
+            conn.close()
+            return False
+
+    def update_document_keywords_with_source(self, document_id: int, keywords: List[str], keywords_source: str) -> bool:
+        """Update both keywords and keywords_source for a document."""
+        ok = self.update_document_keywords(document_id, keywords)
+        if not ok:
+            return False
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute("UPDATE documents SET keywords_source = ? WHERE id = ?", (keywords_source, document_id))
+            conn.commit()
+            conn.close()
+            return True
+        except Exception:
+            conn.rollback()
+            conn.close()
+            return False

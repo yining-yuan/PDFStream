@@ -4,13 +4,18 @@ Handles PDF text extraction and keyword extraction
 """
 
 import os
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Optional
 import PyPDF2
 import re
 from collections import Counter
 import nltk
-from nltk.corpus import stopwords
+from nltk.corpus import stopwords, wordnet
 from nltk.tokenize import word_tokenize
+from nltk.stem import WordNetLemmatizer
+from nltk import pos_tag, RegexpParser
+from nltk.collocations import BigramCollocationFinder, TrigramCollocationFinder
+from nltk.metrics.association import BigramAssocMeasures, TrigramAssocMeasures
+from sklearn.feature_extraction.text import TfidfVectorizer
 
 
 class PDFProcessor:
@@ -24,6 +29,12 @@ class PDFProcessor:
         except LookupError:
             self._ensure_nltk_data()
             self.stop_words = set(stopwords.words('english'))
+        # Domain-specific stopword extension
+        self.domain_stopwords = {
+            'paper','method','methods','result','results','system','approach','study','analysis','data','new','novel','using','based'
+        }
+        self.stop_words.update(self.domain_stopwords)
+        self.lemmatizer = WordNetLemmatizer()
     
     def _ensure_nltk_data(self):
         """Ensure required NLTK data is downloaded"""
@@ -36,6 +47,18 @@ class PDFProcessor:
             nltk.data.find('corpora/stopwords')
         except LookupError:
             nltk.download('stopwords', quiet=True)
+        try:
+            nltk.data.find('corpora/wordnet')
+        except LookupError:
+            nltk.download('wordnet', quiet=True)
+        try:
+            nltk.data.find('corpora/omw-1.4')
+        except LookupError:
+            nltk.download('omw-1.4', quiet=True)
+        try:
+            nltk.data.find('taggers/averaged_perceptron_tagger')
+        except LookupError:
+            nltk.download('averaged_perceptron_tagger', quiet=True)
     
     def extract_text_from_pdf(self, pdf_path: str) -> Tuple[str, int]:
         """
@@ -68,6 +91,87 @@ class PDFProcessor:
             raise
         
         return text.strip(), page_count
+
+    def extract_explicit_keywords(self, text: str, max_n: int = 50) -> List[str]:
+        """Explicit keyword extraction limited to at most two lines.
+        Patterns supported (case-insensitive):
+          Keywords: / KEYWORDS: / Key words: / Index Terms: / Index Terms—
+        Captures: remainder of trigger line plus at most ONE continuation line.
+        Stops early if a continuation line contains a tab or double space sequence
+        (interpreted as start of regular paragraph / formatting) or is blank / heading.
+        Returns original-case list; [] if nothing found.
+        """
+        if not text:
+            return []
+
+        # Restrict search scope to early part (title + abstract region)
+        snippet = text[:120000]
+        raw_lines = snippet.splitlines()
+        lines = [ln.strip() for ln in raw_lines]
+
+        trigger_regex = re.compile(r"^(?i)(keywords?|key\s*words?|index\s*terms?)\s*(?:[:\-–—]|$)\s*(.*)$")
+        heading_regex = re.compile(r"^(?i)(abstract|introduction|materials|methods|results|discussion|conclusions?|references|acknowledg?ments?)\b")
+        collected: List[str] = []
+        found_index = -1
+
+        for i, raw in enumerate(lines):
+            m = trigger_regex.match(raw)
+            if m:
+                found_index = i
+                remainder = m.group(2).strip()
+                if remainder:
+                    collected.append(remainder)
+                # Continue capturing subsequent lines until blank or heading or too long
+                # Allow only ONE continuation line at most
+                if i + 1 < len(lines):
+                    nxt_raw = raw_lines[i + 1]
+                    nxt = lines[i + 1]
+                    if nxt and not heading_regex.match(nxt):
+                        # Stop if line appears to be start of paragraph (too many words)
+                        if len(nxt.split()) <= 40:
+                            # Stop criteria: tab or double-space sequence in raw (layout / paragraph)
+                            if ('\t' not in nxt_raw and '  ' not in nxt_raw):
+                                collected.append(nxt)
+                break
+
+        if found_index == -1:
+            return []
+
+        # Join lines, normalize hyphen-breaks inside keyword block
+        block = ' '.join(collected)
+        # Remove residual multiple spaces
+        block = re.sub(r"\s+", " ", block).strip()
+
+        # Split by ; or , keeping meaningful phrases
+        parts = [p.strip() for p in re.split(r"[;,]", block) if p.strip()]
+
+        # Filter out noise tokens (urls, doi fragments)
+        noise_regex = re.compile(r"^(https?://|doi\b|10\.\d{4,}/)", re.IGNORECASE)
+        cleaned: List[str] = []
+        for p in parts:
+            p2 = re.sub(r"^[\-–—\s]+", "", p)
+            p2 = re.sub(r"[\s\.]+$", "", p2)
+            if not p2:
+                continue
+            if noise_regex.search(p2):
+                continue
+            # Avoid single very common words mistakenly captured
+            if len(p2) < 3:
+                continue
+            cleaned.append(p2)
+
+        # Deduplicate preserving order
+        seen = set()
+        result: List[str] = []
+        for k in cleaned:
+            kl = k.lower()
+            if kl in seen:
+                continue
+            seen.add(kl)
+            result.append(k)
+            if len(result) >= max_n:
+                break
+        return result
     
     def extract_keywords(self, text: str, top_n: int = 50) -> List[str]:
         """
@@ -106,8 +210,142 @@ class PDFProcessor:
         keywords = [word for word, _ in word_freq.most_common(top_n)]
         
         return keywords
+
+    # --- Advanced extraction ---
+    def _lemmatize_tokens(self, tokens: List[Tuple[str,str]]) -> List[str]:
+        out = []
+        for w, tag in tokens:
+            w = w.lower()
+            if w in self.stop_words or len(w) < 3 or w.isdigit():
+                continue
+            pos = tag[0].lower()
+            wn_pos = {'n': wordnet.NOUN, 'v': wordnet.VERB, 'a': wordnet.ADJ, 'r': wordnet.ADV}.get(pos, wordnet.NOUN)
+            lemma = self.lemmatizer.lemmatize(w, pos=wn_pos)
+            out.append(lemma)
+        return out
+
+    def _extract_noun_phrases(self, tokens: List[Tuple[str,str]]) -> List[str]:
+        grammar = r"NP: {<JJ.*>*<NN.*>+}"  # adjectives then one+ nouns
+        chunker = RegexpParser(grammar)
+        tree = chunker.parse(tokens)
+        phrases = []
+        for subtree in tree.subtrees(lambda t: t.label() == 'NP'):
+            words = [w for w, _ in subtree.leaves()]
+            # Basic filtering
+            if len(words) > 1:
+                phrase = ' '.join(w.lower() for w in words if w.lower() not in self.stop_words)
+                phrase = re.sub(r'\b(?:and|or|the|of|in|on|for|with|to)\b','', phrase).strip()
+                phrase = re.sub(r'\s+',' ', phrase)
+                if phrase and len(phrase.split()) <= 5:
+                    phrases.append(phrase)
+        # Deduplicate
+        seen = set()
+        result = []
+        for p in phrases:
+            if p in seen: continue
+            seen.add(p)
+            result.append(p)
+        return result
+
+    def _extract_collocations(self, words: List[str]) -> List[str]:
+        bigram_measures = BigramAssocMeasures()
+        trigram_measures = TrigramAssocMeasures()
+        bigram_finder = BigramCollocationFinder.from_words(words)
+        trigram_finder = TrigramCollocationFinder.from_words(words)
+        bigram_finder.apply_freq_filter(2)
+        trigram_finder.apply_freq_filter(2)
+        bigrams = [" ".join(bg) for bg, score in bigram_finder.score_ngrams(bigram_measures.pmi)[:15]]
+        trigrams = [" ".join(tg) for tg, score in trigram_finder.score_ngrams(trigram_measures.pmi)[:10]]
+        phrases = []
+        for p in bigrams + trigrams:
+            toks = p.split()
+            if all(t in self.stop_words for t in toks):
+                continue
+            phrases.append(p)
+        return phrases
+
+    def extract_keywords_advanced(self, text: str, corpus_texts: Optional[List[str]] = None, top_n: int = 50) -> List[str]:
+        """Advanced keyword/phrase extraction using TF-IDF across corpus + noun phrases + collocations + lemmatization + section weighting."""
+        if not text or not text.strip():
+            return []
+        # Detect abstract section (lines after 'Abstract' until blank line)
+        abstract_tokens = set()
+        lines = text.splitlines()
+        in_abs = False
+        abs_buf = []
+        for ln in lines[:400]:  # limit scanning
+            if not in_abs and re.match(r'(?i)^abstract\b', ln.strip()):
+                in_abs = True
+                continue
+            if in_abs:
+                if not ln.strip():
+                    break
+                abs_buf.append(ln)
+        abstract_text = "\n".join(abs_buf)
+
+        # Tokenize + POS tag (limit size for performance)
+        raw_tokens = word_tokenize(text[:100000])
+        # Simple word filtering for tagging
+        filtered_for_tag = [t for t in raw_tokens if re.match(r'[A-Za-z]{3,}$', t)]
+        tagged = pos_tag(filtered_for_tag)
+        lemmatized = self._lemmatize_tokens(tagged)
+
+        # Build corpus for TF-IDF (include current text as last element)
+        corpus = list(corpus_texts or [])
+        corpus.append(text)
+        try:
+            vectorizer = TfidfVectorizer(stop_words='english', max_features=5000)
+            tfidf_matrix = vectorizer.fit_transform(corpus)
+            feature_names = vectorizer.get_feature_names_out()
+            current_vec = tfidf_matrix[-1].toarray()[0]
+        except Exception:
+            # Fallback to frequency-based
+            return self.extract_keywords(text, top_n)
+
+        scores = {}
+        abs_set = set(w.lower() for w in word_tokenize(abstract_text))
+        for fname, score in zip(feature_names, current_vec):
+            if score <= 0: continue
+            base = fname.lower()
+            if base in self.stop_words or len(base) < 3: continue
+            boost = 1.3 if base in abs_set else 1.0
+            scores[base] = score * boost
+
+        # Collocations & noun phrases
+        noun_phrases = self._extract_noun_phrases(tagged)
+        collocations = self._extract_collocations(lemmatized)
+        phrase_candidates = noun_phrases + collocations
+        phrase_scores = {}
+        for ph in phrase_candidates:
+            toks = ph.split()
+            # Average token scores
+            tok_scores = [scores.get(t, 0) for t in toks]
+            if sum(tok_scores) == 0: continue
+            phrase_scores[ph] = (sum(tok_scores) / len(tok_scores)) * (1 + 0.1*len(toks))
+
+        # Merge tokens and phrases
+        token_items = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+        phrase_items = sorted(phrase_scores.items(), key=lambda x: x[1], reverse=True)
+
+        combined: List[str] = []
+        # Interleave phrases and tokens giving preference to phrases
+        p_i = 0; t_i = 0
+        while len(combined) < top_n and (p_i < len(phrase_items) or t_i < len(token_items)):
+            if p_i < len(phrase_items):
+                ph = phrase_items[p_i][0]
+                if ph not in combined:
+                    combined.append(ph)
+                p_i += 1
+            if len(combined) >= top_n: break
+            if t_i < len(token_items):
+                tk = token_items[t_i][0]
+                if tk not in combined:
+                    combined.append(tk)
+                t_i += 1
+
+        return combined[:top_n]
     
-    def process_pdf(self, pdf_path: str, top_keywords: int = 50) -> Dict:
+    def process_pdf(self, pdf_path: str, top_keywords: int = 50, corpus_texts: Optional[List[str]] = None) -> Dict:
         """
         Process a PDF file: extract text and keywords
         
@@ -121,8 +359,19 @@ class PDFProcessor:
         # Extract text
         text, page_count = self.extract_text_from_pdf(pdf_path)
         
-        # Extract keywords
-        keywords = self.extract_keywords(text, top_keywords)
+        # Prefer explicit (author-provided) keywords; fallback to extracted
+        explicit = self.extract_explicit_keywords(text, max_n=top_keywords)
+        if explicit:
+            keywords = explicit
+            keywords_source = 'explicit'
+        else:
+            # Advanced extraction fallback
+            try:
+                keywords = self.extract_keywords_advanced(text, corpus_texts=corpus_texts, top_n=top_keywords)
+                keywords_source = 'advanced'
+            except Exception:
+                keywords = self.extract_keywords(text, top_keywords)
+                keywords_source = 'extracted'
         
         # Get file info
         file_size = os.path.getsize(pdf_path)
@@ -133,6 +382,7 @@ class PDFProcessor:
             'filepath': pdf_path,
             'text': text,
             'keywords': keywords,
+            'keywords_source': keywords_source,
             'page_count': page_count,
             'file_size': file_size
         }

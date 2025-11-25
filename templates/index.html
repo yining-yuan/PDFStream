@@ -85,6 +85,16 @@
             font-size: 24px;
             margin-bottom: 20px;
         }
+
+        .keyword-search-box {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #e2e8f0;
+            border-radius: 8px;
+            font-size: 15px;
+            margin-bottom: 10px;
+        }
+        .keyword-search-box:focus { outline: none; border-color: #667eea; }
         
         .upload-area {
             border: 2px dashed #cbd5e0;
@@ -163,14 +173,28 @@
             padding: 15px;
             border-radius: 8px;
             margin-bottom: 10px;
-            cursor: pointer;
             transition: all 0.3s;
         }
         
         .document-item:hover {
             background: #edf2f7;
-            transform: translateX(5px);
+            transform: translateX(3px);
         }
+        .doc-actions { margin-top:10px; display:flex; gap:8px; flex-wrap:wrap; }
+        .btn-small { padding:6px 12px; font-size:12px; width:auto; }
+        .btn-danger { background:#e53e3e; }
+        .btn-danger:hover { background:#c53030; }
+        .btn-secondary { background:#4a5568; }
+        .btn-secondary:hover { background:#2d3748; }
+        /* Modal */
+        .modal-backdrop { position:fixed; inset:0; background:rgba(0,0,0,.45); display:none; align-items:center; justify-content:center; z-index:1000; }
+        .modal { background:#fff; width:500px; max-width:90%; padding:24px; border-radius:12px; box-shadow:0 10px 25px rgba(0,0,0,.25); }
+        .modal h3 { margin-bottom:12px; font-size:20px; color:#333; }
+        .modal textarea { width:100%; min-height:120px; padding:10px; border:2px solid #e2e8f0; border-radius:8px; font-size:14px; resize:vertical; }
+        .modal textarea:focus { outline:none; border-color:#667eea; }
+        .modal-footer { margin-top:16px; display:flex; gap:10px; justify-content:flex-end; }
+        .fade-in { animation:fade .25s ease-out; }
+        @keyframes fade { from { opacity:0; transform:translateY(8px);} to { opacity:1; transform:translateY(0);} }
         
         .document-name {
             font-weight: 600;
@@ -189,7 +213,10 @@
             border-radius: 8px;
             margin-bottom: 10px;
             border-left: 4px solid #667eea;
+            cursor: pointer;
+            transition: background .2s ease;
         }
+        .result-item:hover { background: #edf2f7; }
         
         .similarity-score {
             display: inline-block;
@@ -277,12 +304,12 @@
         
         <div class="main-content">
             <div class="card">
-                <h2>📤 Upload PDF</h2>
+                <h2>📤 Upload PDF(s)</h2>
                 <div id="uploadMessage"></div>
                 <div class="upload-area" id="uploadArea">
                     <div class="upload-icon">📄</div>
-                    <p>Drag and drop a PDF file here or click to select</p>
-                    <input type="file" id="fileInput" accept=".pdf">
+                    <p>Drag and drop one or more PDF files here or click to select</p>
+                    <input type="file" id="fileInput" accept=".pdf" multiple>
                 </div>
             </div>
             
@@ -291,8 +318,13 @@
                 <div id="searchMessage"></div>
                 <textarea class="search-box" id="searchQuery" placeholder="Enter search keywords or paste text to find similar documents..."></textarea>
                 <button class="btn" id="searchBtn" onclick="searchDocuments()">Search</button>
-                
+                <hr style="margin:25px 0; border:0; border-top:1px solid #e2e8f0;">
+                <h3 style="margin-bottom:10px; color:#333; font-size:18px;">Exact Keyword Search</h3>
+                <input type="text" id="keywordInput" class="keyword-search-box" placeholder="Enter a single keyword (exact match)...">
+                <button class="btn" onclick="keywordSearch()" style="margin-bottom:15px;">Keyword Search</button>
+                <div id="keywordMessage"></div>
                 <div id="searchResults" style="margin-top: 20px;"></div>
+                <div id="keywordResults" style="margin-top: 20px;"></div>
             </div>
         </div>
         
@@ -333,9 +365,14 @@
                 const listElement = document.getElementById('documentList');
                 
                 if (data.success && data.documents.length > 0) {
-                    listElement.innerHTML = data.documents.map(doc => `
-                        <div class="document-item" onclick="findSimilar(${doc.id})">
-                            <div class="document-name">${doc.filename}</div>
+                    window._documents = data.documents; // cache for editing
+                    listElement.innerHTML = data.documents.map(doc => {
+                        const source = (doc.keywords_source || 'extracted').toLowerCase();
+                        const badgeColor = source === 'explicit' ? '#38a169' : (source === 'advanced' ? '#3182ce' : '#805ad5');
+                        const badgeLabel = source.charAt(0).toUpperCase() + source.slice(1);
+                        return `
+                        <div class="document-item" data-doc-id="${doc.id}">
+                            <div class="document-name">${doc.filename} <span style="background:${badgeColor};color:#fff;padding:2px 8px;border-radius:10px;font-size:11px;vertical-align:middle;">${badgeLabel}</span></div>
                             <div class="document-meta">
                                 📅 ${new Date(doc.upload_date).toLocaleDateString()} | 
                                 📄 ${doc.page_count} pages | 
@@ -344,8 +381,13 @@
                             <div class="keywords">
                                 ${doc.keywords.slice(0, 10).map(kw => `<span class="keyword-tag">${kw}</span>`).join('')}
                             </div>
+                            <div class="doc-actions">
+                               <button class="btn btn-small" onclick="openPdf(${doc.id}); event.stopPropagation();" title="Open">Open</button>
+                               <button class="btn btn-small btn-secondary" onclick="openEditModal(${doc.id}); event.stopPropagation();" title="Edit Keywords">Edit Keywords</button>
+                               <button class="btn btn-small btn-danger" onclick="deleteDocument(${doc.id}); event.stopPropagation();" title="Delete PDF">Delete</button>
+                            </div>
                         </div>
-                    `).join('');
+                    `}).join('');
                 } else {
                     listElement.innerHTML = '<div class="loading"><p>No documents uploaded yet</p></div>';
                 }
@@ -373,50 +415,48 @@
         uploadArea.addEventListener('drop', (e) => {
             e.preventDefault();
             uploadArea.classList.remove('dragging');
-            
-            const files = e.dataTransfer.files;
+            const files = Array.from(e.dataTransfer.files).filter(f => f.name.toLowerCase().endsWith('.pdf'));
             if (files.length > 0) {
-                uploadFile(files[0]);
+                uploadFiles(files);
             }
         });
         
         fileInput.addEventListener('change', (e) => {
-            if (e.target.files.length > 0) {
-                uploadFile(e.target.files[0]);
+            const files = Array.from(e.target.files).filter(f => f.name.toLowerCase().endsWith('.pdf'));
+            if (files.length > 0) {
+                uploadFiles(files);
             }
         });
         
-        async function uploadFile(file) {
+        async function uploadFiles(files){
             const messageDiv = document.getElementById('uploadMessage');
-            
-            if (!file.name.toLowerCase().endsWith('.pdf')) {
-                messageDiv.innerHTML = '<div class="message error">Please select a PDF file</div>';
+            if(!files || files.length===0){
+                messageDiv.innerHTML = '<div class="message error">No PDF files selected</div>';
                 return;
             }
-            
             const formData = new FormData();
-            formData.append('file', file);
-            
-            messageDiv.innerHTML = '<div class="loading"><div class="spinner"></div><p>Processing PDF...</p></div>';
-            
+            files.forEach(f => formData.append('files', f));
+            messageDiv.innerHTML = `<div class='loading'><div class='spinner'></div><p>Uploading ${files.length} PDF(s)...</p></div>`;
             try {
-                const response = await fetch(`${API_URL}/upload`, {
-                    method: 'POST',
-                    body: formData
-                });
-                
-                const data = await response.json();
-                
-                if (data.success) {
-                    messageDiv.innerHTML = `<div class="message success">✓ Successfully uploaded and processed "${data.filename}"<br>Extracted ${data.keywords_extracted} keywords from ${data.page_count} pages</div>`;
-                    loadDocuments();
-                    loadStats();
-                    fileInput.value = '';
-                } else {
-                    messageDiv.innerHTML = `<div class="message error">✗ Error: ${data.error}</div>`;
+                const resp = await fetch(`${API_URL}/upload_batch`, { method:'POST', body: formData });
+                const data = await resp.json();
+                if(!data.success){
+                    messageDiv.innerHTML = `<div class='message error'>Batch failed: ${data.error}</div>`;
+                    return;
                 }
-            } catch (error) {
-                messageDiv.innerHTML = `<div class="message error">✗ Upload failed: ${error.message}</div>`;
+                const rows = data.results.map(r => {
+                    if(!r.success){
+                        return `<tr><td>${r.filename||''}</td><td style='color:#c53030;'>Failed</td><td colspan='3'>${r.error}</td></tr>`;
+                    }
+                    const badgeColor = r.keywords_source === 'explicit' ? '#38a169' : (r.keywords_source === 'advanced' ? '#3182ce' : '#805ad5');
+                    return `<tr><td>${r.filename}</td><td><span style='background:${badgeColor};color:#fff;padding:2px 6px;border-radius:8px;font-size:11px;'>${r.keywords_source}</span></td><td>${r.page_count}</td><td>${r.keywords_extracted}</td><td>OK</td></tr>`;
+                }).join('');
+                messageDiv.innerHTML = `<div class='message success'><strong>Batch upload complete</strong><br><table style='width:100%;margin-top:8px;font-size:12px;border-collapse:collapse;'><thead><tr><th style='text-align:left;'>File</th><th>Source</th><th>Pages</th><th>Keywords</th><th>Status</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+                loadDocuments();
+                loadStats();
+                fileInput.value='';
+            } catch(err){
+                messageDiv.innerHTML = `<div class='message error'>Batch upload error: ${err.message}</div>`;
             }
         }
         
@@ -448,7 +488,7 @@
                 if (data.success && data.results.length > 0) {
                     resultsDiv.innerHTML = '<h3 style="margin-bottom: 15px; color: #333;">Search Results</h3>' +
                         data.results.map(doc => `
-                            <div class="result-item">
+                            <div class="result-item" onclick="openPdf(${doc.id})" title="Open PDF in new tab">
                                 <div class="document-name">
                                     ${doc.filename}
                                     <span class="similarity-score">${(doc.similarity_score * 100).toFixed(1)}% match</span>
@@ -492,7 +532,7 @@
                 if (data.success && data.results.length > 0) {
                     resultsDiv.innerHTML = '<h3 style="margin-bottom: 15px; color: #333;">Similar Documents</h3>' +
                         data.results.map(doc => `
-                            <div class="result-item">
+                            <div class="result-item" onclick="openPdf(${doc.id})" title="Open PDF in new tab">
                                 <div class="document-name">
                                     ${doc.filename}
                                     <span class="similarity-score">${(doc.similarity_score * 100).toFixed(1)}% similar</span>
@@ -514,6 +554,112 @@
             }
         }
         
+        // Keyword (exact) search
+        async function keywordSearch() {
+            const kw = document.getElementById('keywordInput').value.trim().toLowerCase();
+            const msgDiv = document.getElementById('keywordMessage');
+            const resultsDiv = document.getElementById('keywordResults');
+            if (!kw) {
+                msgDiv.innerHTML = '<div class="message error">Enter a keyword</div>';
+                return;
+            }
+            msgDiv.innerHTML = '';
+            resultsDiv.innerHTML = '<div class="loading"><div class="spinner"></div><p>Searching keyword...</p></div>';
+            try {
+                const resp = await fetch(`${API_URL}/search_keyword`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ keyword: kw })
+                });
+                const data = await resp.json();
+                if (data.success && data.results.length > 0) {
+                    resultsDiv.innerHTML = `<h3 style=\"margin-bottom:15px; color:#333;\">Keyword Matches for '${kw}'</h3>` +
+                        data.results.map(doc => `
+                            <div class="result-item" onclick="openPdf(${doc.id})" title="Open PDF in new tab">
+                                <div class="document-name">
+                                    ${doc.filename}
+                                    <span class="similarity-score">Match</span>
+                                </div>
+                                <div class="document-meta">
+                                    📅 ${new Date(doc.upload_date).toLocaleDateString()} | 📄 ${doc.page_count} pages
+                                </div>
+                                <div class="keywords">
+                                    ${doc.keywords.slice(0, 8).map(kw2 => `<span class="keyword-tag">${kw2}</span>`).join('')}
+                                </div>
+                            </div>
+                        `).join('');
+                } else {
+                    resultsDiv.innerHTML = '<div class="loading"><p>No documents contain that keyword</p></div>';
+                }
+            } catch (err) {
+                resultsDiv.innerHTML = `<div class=\"message error\">Keyword search failed: ${err.message}</div>`;
+            }
+        }
+
+        function openPdf(id) {
+            window.open(`/pdf/${id}`,'_blank','noopener');
+        }
+
+        // Delete PDF
+        async function deleteDocument(id) {
+            if(!confirm('Are you sure to delete? This action cannot be undone.')) return;
+            try {
+                const resp = await fetch(`${API_URL}/document/${id}`, { method:'DELETE' });
+                const data = await resp.json();
+                if(data.success){
+                    loadDocuments();
+                    loadStats();
+                    alert('Deleted successfully');
+                } else {
+                    alert('Delete Failed:'+ (data.error||'Unknown error'));
+                }
+            } catch(err){
+                alert('Error:'+ err.message);
+            }
+        }
+
+        // Modal editing
+        function openEditModal(id){
+            const backdrop = document.getElementById('editModalBackdrop');
+            const textarea = document.getElementById('editKeywordsInput');
+            const doc = (window._documents||[]).find(d=>d.id===id);
+            if(!doc){ alert('Document not found'); return; }
+            backdrop.dataset.docId = id;
+            textarea.value = doc.keywords.join('; ');
+            backdrop.style.display='flex';
+        }
+        function closeEditModal(){
+            const backdrop = document.getElementById('editModalBackdrop');
+            backdrop.style.display='none';
+        }
+        async function submitKeywordEdit(){
+            const backdrop = document.getElementById('editModalBackdrop');
+            const id = parseInt(backdrop.dataset.docId,10);
+            const textarea = document.getElementById('editKeywordsInput');
+            const raw = textarea.value.trim();
+            if(!raw){ alert('Please enter at least one keyword.'); return; }
+            const parts = raw.split(/[;,]/).map(x=>x.trim()).filter(x=>x);
+            if(parts.length===0){ alert('Please enter valid keywords.'); return; }
+            if(!confirm('Are you sure you want to update the keywords?')) return;
+            try {
+                const resp = await fetch(`${API_URL}/document/${id}/keywords`, {
+                    method:'PATCH',
+                    headers:{'Content-Type':'application/json'},
+                    body: JSON.stringify({ keywords: parts })
+                });
+                const data = await resp.json();
+                if(data.success){
+                    alert('Keywords updated.');
+                    closeEditModal();
+                    loadDocuments();
+                } else {
+                    alert('Update failed: '+ (data.error||'Unknown error'));
+                }
+            } catch(err){
+                alert('Request error: '+ err.message);
+            }
+        }
+
         // Initialize
         loadStats();
         loadDocuments();
@@ -523,5 +669,17 @@
             loadStats();
         }, 30000);
     </script>
+    <!-- Edit Keywords Modal -->
+    <div class="modal-backdrop" id="editModalBackdrop" onclick="if(event.target===this) closeEditModal();">
+        <div class="modal fade-in">
+            <h3>Edit Keywords</h3>
+            <p style="font-size:12px; color:#555; margin-bottom:8px;">Separate keywords with a semicolon or comma.</p>
+            <textarea id="editKeywordsInput" placeholder="keyword1; keyword2; ..."></textarea>
+            <div class="modal-footer">
+                <button class="btn btn-small btn-secondary" onclick="closeEditModal()">Cancel</button>
+                <button class="btn btn-small" onclick="submitKeywordEdit()">Save</button>
+            </div>
+        </div>
+    </div>
 </body>
 </html>
