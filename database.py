@@ -5,6 +5,7 @@ Handles SQLite database operations for PDF metadata and keywords
 
 import sqlite3
 import json
+import re
 from datetime import datetime
 from typing import List, Dict, Optional
 import os
@@ -231,6 +232,58 @@ class DatabaseManager:
                 'match_count': row[9]
             })
         
+        return documents
+
+    def search_by_keywords_approx(self, raw_query: str, limit: int = 100) -> List[Dict]:
+        """Approximate keyword search.
+        Splits the raw query into tokens (words), ignores very short tokens (<2 chars),
+        and matches any stored keyword containing a token as a substring (case-insensitive).
+        Returns documents ranked by number of distinct matched keywords then recency.
+        """
+        if not raw_query or not raw_query.strip():
+            return []
+        # Tokenize: split on non-alphanumeric boundaries
+        tokens = [t.lower() for t in re.split(r"[^A-Za-z0-9]+", raw_query) if t and len(t) >= 2]
+        if not tokens:
+            return []
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        # Build dynamic LIKE conditions
+        like_clauses = []
+        params = []
+        for tok in tokens:
+            like_clauses.append("dk.keyword LIKE ?")
+            params.append(f"%{tok}%")
+        where_clause = " OR ".join(like_clauses)
+        query = f"""
+            SELECT d.id, d.filename, d.filepath, d.upload_date, d.file_size,
+                   d.page_count, d.text_content, d.keywords, d.created_at,
+                   COUNT(DISTINCT dk.keyword) as match_count
+            FROM documents d
+            JOIN document_keywords dk ON d.id = dk.document_id
+            WHERE {where_clause}
+            GROUP BY d.id
+            ORDER BY match_count DESC, d.created_at DESC
+            LIMIT ?
+        """
+        params.append(limit)
+        cursor.execute(query, params)
+        rows = cursor.fetchall()
+        conn.close()
+        documents = []
+        for row in rows:
+            documents.append({
+                'id': row[0],
+                'filename': row[1],
+                'filepath': row[2],
+                'upload_date': row[3],
+                'file_size': row[4],
+                'page_count': row[5],
+                'text_content': row[6],
+                'keywords': json.loads(row[7]) if row[7] else [],
+                'created_at': row[8],
+                'match_count': row[9]
+            })
         return documents
     
     def get_document_count(self) -> int:

@@ -20,8 +20,7 @@ if app.config['SECRET_KEY'] == 'dev-key-change-in-production' and not os.environ
     import warnings
     warnings.warn("WARNING: Using default SECRET_KEY. Set SECRET_KEY environment variable for production!")
 app.config['UPLOAD_FOLDER'] = 'uploads'
-app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50MB max file size
-CORS(app)
+app.config['MAX_CONTENT_LENGTH'] = 700 * 1024 * 1024  # 700MB max file size
 
 # Ensure upload folder exists
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
@@ -224,24 +223,25 @@ def delete_document(doc_id):
 
 @app.route('/api/search_keyword', methods=['POST'])
 def search_keyword():
-    """Exact keyword search: returns documents containing the given keyword"""
+    """Approximate keyword search.
+    Accepts a query string of one or more tokens; returns documents whose extracted
+    keywords contain any token as a substring (case-insensitive). Ranked by number of
+    distinct matched keywords then recency.
+    """
     try:
         data = request.get_json() or {}
-        keyword = (data.get('keyword') or '').strip().lower()
-        if not keyword:
-            return jsonify({'success': False, 'error': 'Keyword is required'}), 400
+        raw_query = (data.get('keyword') or data.get('query') or '').strip()
+        if not raw_query:
+            return jsonify({'success': False, 'error': 'Query is required'}), 400
 
-        # Perform keyword search (single keyword exact match)
-        results = db.search_by_keywords([keyword], limit=100)
+        results = db.search_by_keywords_approx(raw_query, limit=200)
 
-        # Strip large text content for list view
         for doc in results:
-            if 'text_content' in doc:
-                doc.pop('text_content')
+            doc.pop('text_content', None)
 
         return jsonify({
             'success': True,
-            'keyword': keyword,
+            'query': raw_query,
             'results': results,
             'count': len(results)
         })
@@ -339,7 +339,7 @@ def upload_batch():
             return jsonify({'success': False, 'error': 'Empty file list'}), 400
 
         # Limit number of files to prevent overload
-        MAX_FILES = 15
+        MAX_FILES = 500
         if len(file_list) > MAX_FILES:
             return jsonify({'success': False, 'error': f'Maximum {MAX_FILES} files allowed per batch'}), 400
 

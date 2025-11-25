@@ -317,14 +317,20 @@
                 <h2>🔍 Search Documents</h2>
                 <div id="searchMessage"></div>
                 <textarea class="search-box" id="searchQuery" placeholder="Enter search keywords or paste text to find similar documents..."></textarea>
-                <button class="btn" id="searchBtn" onclick="searchDocuments()">Search</button>
+                    <div style="display:flex; gap:10px; margin-bottom:10px;">
+                        <button class="btn" id="searchBtn" onclick="searchDocuments()" style="flex:1;">Search</button>
+                        <button class="btn btn-secondary" onclick="clearSearchResults()" style="flex:1;" title="Clear only the displayed search results">Clear Results</button>
+                    </div>
                 <hr style="margin:25px 0; border:0; border-top:1px solid #e2e8f0;">
-                <h3 style="margin-bottom:10px; color:#333; font-size:18px;">Exact Keyword Search</h3>
-                <input type="text" id="keywordInput" class="keyword-search-box" placeholder="Enter a single keyword (exact match)...">
-                <button class="btn" onclick="keywordSearch()" style="margin-bottom:15px;">Keyword Search</button>
+                <h3 style="margin-bottom:10px; color:#333; font-size:18px;">Match Keyword</h3>
+                <input type="text" id="keywordInput" class="keyword-search-box" placeholder="Enter one or more keywords (space/comma separated)...">
+                    <div style="display:flex; gap:10px;">
+                        <button class="btn" onclick="keywordSearch()" style="margin-bottom:15px; flex:1;">Approximate Match</button>
+                        <button class="btn btn-secondary" onclick="clearKeywordResults()" style="margin-bottom:15px; flex:1;" title="Clear only the displayed keyword match results">Clear Results</button>
+                    </div>
                 <div id="keywordMessage"></div>
                 <div id="searchResults" style="margin-top: 20px;"></div>
-                <div id="keywordResults" style="margin-top: 20px;"></div>
+                <div id="keywordResults" style="margin-top: 20px; max-height:300px; overflow-y:auto;"></div>
             </div>
         </div>
         
@@ -554,13 +560,13 @@
             }
         }
         
-        // Keyword (exact) search
+        // Approximate keyword search (multi-token, substring match)
         async function keywordSearch() {
-            const kw = document.getElementById('keywordInput').value.trim().toLowerCase();
+            const raw = document.getElementById('keywordInput').value.trim();
             const msgDiv = document.getElementById('keywordMessage');
             const resultsDiv = document.getElementById('keywordResults');
-            if (!kw) {
-                msgDiv.innerHTML = '<div class="message error">Enter a keyword</div>';
+            if (!raw) {
+                msgDiv.innerHTML = '<div class="message error">Enter one or more keywords</div>';
                 return;
             }
             msgDiv.innerHTML = '';
@@ -569,11 +575,11 @@
                 const resp = await fetch(`${API_URL}/search_keyword`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ keyword: kw })
+                    body: JSON.stringify({ keyword: raw })
                 });
                 const data = await resp.json();
                 if (data.success && data.results.length > 0) {
-                    resultsDiv.innerHTML = `<h3 style=\"margin-bottom:15px; color:#333;\">Keyword Matches for '${kw}'</h3>` +
+                    resultsDiv.innerHTML = `<h3 style=\"margin-bottom:15px; color:#333;\">Approximate Matches for '${raw}' (${data.count} docs)</h3>` +
                         data.results.map(doc => `
                             <div class="result-item" onclick="openPdf(${doc.id})" title="Open PDF in new tab">
                                 <div class="document-name">
@@ -596,6 +602,18 @@
             }
         }
 
+            // Clear only displayed similarity search results (does not modify data)
+            function clearSearchResults(){
+                document.getElementById('searchResults').innerHTML='';
+                document.getElementById('searchMessage').innerHTML='';
+            }
+
+            // Clear only displayed approximate keyword match results (does not modify data)
+            function clearKeywordResults(){
+                document.getElementById('keywordResults').innerHTML='';
+                document.getElementById('keywordMessage').innerHTML='';
+            }
+
         function openPdf(id) {
             window.open(`/pdf/${id}`,'_blank','noopener');
         }
@@ -609,7 +627,7 @@
                 if(data.success){
                     loadDocuments();
                     loadStats();
-                    alert('Deleted successfully');
+                    // alert('Deleted successfully');
                 } else {
                     alert('Delete Failed:'+ (data.error||'Unknown error'));
                 }

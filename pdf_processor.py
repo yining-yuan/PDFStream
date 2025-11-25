@@ -9,6 +9,7 @@ import PyPDF2
 import re
 from collections import Counter
 import nltk
+import unicodedata
 from nltk.corpus import stopwords, wordnet
 from nltk.tokenize import word_tokenize
 from nltk.stem import WordNetLemmatizer
@@ -82,7 +83,9 @@ class PDFProcessor:
                     try:
                         page_text = page.extract_text()
                         if page_text:
-                            text += page_text + "\n"
+                            # Sanitize to remove/replace surrogate code points that break utf-8 encoding
+                            cleaned = self._sanitize_surrogates(page_text)
+                            text += cleaned + "\n"
                     except (PyPDF2.errors.PdfReadError, PyPDF2.errors.PyPdfError) as e:
                         print(f"Error extracting text from page: {e}")
                         continue
@@ -92,13 +95,29 @@ class PDFProcessor:
         
         return text.strip(), page_count
 
-    def extract_explicit_keywords(self, text: str, max_n: int = 50) -> List[str]:
-        """Explicit keyword extraction limited to at most two lines.
+    def _sanitize_surrogates(self, s: str) -> str:
+        """Remove or safely encode surrogate code points that cause UTF-8 encoding failures.
+        Strategy:
+        1. Directly strip isolated surrogate code points (range D800-DFFF) which are invalid in UTF-8.
+        2. Fallback encode/decode ignoring errors to ensure downstream DB/json operations succeed.
+        Preserves standard BMP and non-BMP characters already correctly decoded.
+        """
+        # Quick removal of any surrogate code units
+        # Python treats them as individual code points if decoding was imperfect.
+        s_no_sur = re.sub(r'[\ud800-\udfff]', '', s)
+        try:
+            # Attempt round-trip to ensure safety; ignore undecodable remnants.
+            return s_no_sur.encode('utf-8', 'ignore').decode('utf-8', 'ignore')
+        except Exception:
+            return s_no_sur.replace('\ud835', '')  # specific common problematic surrogate seen in logs
+
+    def extract_explicit_keywords(self, text: str, max_n: int = 10) -> List[str]:
+        """Explicit keyword extraction limited to at most four lines.
         Patterns supported (case-insensitive):
           Keywords: / KEYWORDS: / Key words: / Index Terms: / Index Terms—
-        Captures: remainder of trigger line plus at most ONE continuation line.
-        Stops early if a continuation line contains a tab or double space sequence
-        (interpreted as start of regular paragraph / formatting) or is blank / heading.
+        Captures: remainder of trigger line plus up to THREE continuation lines.
+        Continuation scan stops if any line is blank, a section heading, >40 words,
+        or contains a tab or double-space sequence (interpreted as start of paragraph/layout).
         Returns original-case list; [] if nothing found.
         """
         if not text:
@@ -109,8 +128,14 @@ class PDFProcessor:
         raw_lines = snippet.splitlines()
         lines = [ln.strip() for ln in raw_lines]
 
-        trigger_regex = re.compile(r"^(?i)(keywords?|key\s*words?|index\s*terms?)\s*(?:[:\-–—]|$)\s*(.*)$")
-        heading_regex = re.compile(r"^(?i)(abstract|introduction|materials|methods|results|discussion|conclusions?|references|acknowledg?ments?)\b")
+        trigger_regex = re.compile(
+            r"^(?i)(keywords?|key\s*words?|index\s*terms?)\s*(?:[:\-–—]|$)\s*(.*)$"
+        )
+        heading_regex = re.compile(
+            r"^(?i)(abstract|introduction|materials|methods|results|discussion|"
+            r"conclusions?|references|acknowledg?ments?)\b"
+        )
+
         collected: List[str] = []
         found_index = -1
 
@@ -119,46 +144,120 @@ class PDFProcessor:
             if m:
                 found_index = i
                 remainder = m.group(2).strip()
+
+                # === MAIN EARLY STOP: require "...word1; word2..." or "...word1, word2..."
+                # i.e. at least one delimiter followed by another token.
                 if remainder:
+                    pattern_ok = bool(
+                        re.search(r"\b\w[\w\-]*\s*[;,]\s+\w[\w\-]*", remainder)
+                    )
+                    if not pattern_ok:
+                        return []  # bail out of explicit mode entirely
+
                     collected.append(remainder)
-                # Continue capturing subsequent lines until blank or heading or too long
-                # Allow only ONE continuation line at most
-                if i + 1 < len(lines):
-                    nxt_raw = raw_lines[i + 1]
-                    nxt = lines[i + 1]
-                    if nxt and not heading_regex.match(nxt):
-                        # Stop if line appears to be start of paragraph (too many words)
-                        if len(nxt.split()) <= 40:
-                            # Stop criteria: tab or double-space sequence in raw (layout / paragraph)
-                            if ('\t' not in nxt_raw and '  ' not in nxt_raw):
-                                collected.append(nxt)
+
+                # Allow up to THREE continuation lines (total 4 including trigger)
+                max_continuations = 3
+                for j in range(1, max_continuations + 1):
+                    idx = i + j
+                    if idx >= len(lines):
+                        break
+                    nxt_raw = raw_lines[idx]
+                    nxt = lines[idx]
+                    # Stop conditions
+                    if not nxt:
+                        break
+                    if heading_regex.match(nxt):
+                        break
+                    if len(nxt.split()) > 40:  # likely paragraph start
+                        break
+                    if ("\t" in nxt_raw) or ("  " in nxt_raw):  # layout/paragraph indicator
+                        break
+                    collected.append(nxt)
                 break
 
         if found_index == -1:
             return []
 
-        # Join lines, normalize hyphen-breaks inside keyword block
-        block = ' '.join(collected)
-        # Remove residual multiple spaces
+        # Join lines
+        block = " ".join(collected)
+        # Strip multiple spaces
         block = re.sub(r"\s+", " ", block).strip()
 
-        # Split by ; or , keeping meaningful phrases
+        # Heuristic: cut off classic ACM/IEEE junk if present
+        block = re.split(r"(?i)\bacm reference format\b", block)[0]
+        block = re.split(r"(?i)\b(ccs concepts|copyright)\b", block)[0]
+
+        # Split by ; or , into raw candidates
         parts = [p.strip() for p in re.split(r"[;,]", block) if p.strip()]
 
-        # Filter out noise tokens (urls, doi fragments)
         noise_regex = re.compile(r"^(https?://|doi\b|10\.\d{4,}/)", re.IGNORECASE)
-        cleaned: List[str] = []
-        for p in parts:
+
+        def clean_candidate(p: str) -> Optional[str]:
+            # strip leading/trailing junk
             p2 = re.sub(r"^[\-–—\s]+", "", p)
             p2 = re.sub(r"[\s\.]+$", "", p2)
             if not p2:
-                continue
+                return None
             if noise_regex.search(p2):
+                return None
+
+            # Token-level cleaning to handle “Agentic Systems ACM Reference Format: Martin Weiss”
+            tokens = p2.split()
+            if not tokens:
+                return None
+
+            STOP_TOKENS = {
+                # publisher / meta words that mean we've left the keyword list
+                "acm",
+                "ieee",
+                "springer",
+                "press",
+                "university",
+                "journal",
+                "proceedings",
+                "reference",
+                "format",
+                "arxiv",
+                "volume",
+                "vol.",
+                "no.",
+                "pages",
+            }
+
+            clean_tokens: List[str] = []
+            for tok in tokens:
+                stripped = tok.strip(",;:.")
+                lower = stripped.lower()
+
+                # stop once we hit meta tokens, years, or a colon in the middle
+                if re.fullmatch(r"(19|20)\d{2}", stripped):
+                    break
+                if ":" in tok and clean_tokens:
+                    break
+                if lower in STOP_TOKENS:
+                    break
+
+                clean_tokens.append(stripped)
+
+            if not clean_tokens:
+                return None
+
+            # Very long phrases are likely garbage (e.g. whole sentence)
+            if len(clean_tokens) > 6:
+                return None
+
+            return " ".join(clean_tokens)
+
+        cleaned: List[str] = []
+        for p in parts:
+            kw = clean_candidate(p)
+            if not kw:
                 continue
             # Avoid single very common words mistakenly captured
-            if len(p2) < 3:
+            if len(kw) < 3:
                 continue
-            cleaned.append(p2)
+            cleaned.append(kw)
 
         # Deduplicate preserving order
         seen = set()
@@ -171,9 +270,11 @@ class PDFProcessor:
             result.append(k)
             if len(result) >= max_n:
                 break
+
         return result
+
     
-    def extract_keywords(self, text: str, top_n: int = 50) -> List[str]:
+    def extract_keywords(self, text: str, top_n: int = 10) -> List[str]:
         """
         Extract keywords from text using frequency analysis
         
@@ -345,7 +446,7 @@ class PDFProcessor:
 
         return combined[:top_n]
     
-    def process_pdf(self, pdf_path: str, top_keywords: int = 50, corpus_texts: Optional[List[str]] = None) -> Dict:
+    def process_pdf(self, pdf_path: str, top_keywords: int = 10, corpus_texts: Optional[List[str]] = None) -> Dict:
         """
         Process a PDF file: extract text and keywords
         
@@ -387,7 +488,7 @@ class PDFProcessor:
             'file_size': file_size
         }
     
-    def extract_keywords_from_text(self, text: str, top_n: int = 20) -> List[str]:
+    def extract_keywords_from_text(self, text: str, top_n: int = 10) -> List[str]:
         """
         Extract keywords from raw text (for search queries)
         
