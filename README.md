@@ -18,6 +18,7 @@ PDFStream ingests each PDF, pulls out readable text, extracts meaningful keyword
 - Generate advanced keywords when authors do not supply them (using statistics + language patterns).
 - Search by free text OR request documents similar to a specific document.
 - Perform quick approximate keyword matching.
+- View aggregated keywords by PI (Principal Investigator) name.
 - Manually edit a document’s keyword list.
 - Reprocess keywords in bulk if you add many new documents later.
 - View aggregate statistics (counts, averages, latest upload date).
@@ -34,6 +35,7 @@ PDFStream ingests each PDF, pulls out readable text, extracts meaningful keyword
 | Reprocess Keywords | Refreshes machine-derived keywords after growth | Raises quality as corpus evolves |
 | Similarity Search | Finds thematically related documents | Accelerates literature/precedent discovery |
 | Manual Keyword Editing | Lets user curate keyword list | Human refinement of machine suggestions |
+| Keywords by PI | Aggregates keywords across all docs for a given PI | Quickly see a PI’s thematic footprint |
 | Stats Endpoint | Aggregates counts & averages | Operational visibility |
 
 ---
@@ -51,6 +53,8 @@ Instead of re‑reading and re‑processing PDFs every time you search, the syst
 | text_content | Extracted full text (for similarity computation). |
 | keywords | List used for quick filtering & display. |
 | keywords_source | `explicit`, `advanced`, or `extracted` (see below). |
+| pi_name | Optional PI/author name captured per document. |
+| application_number | Optional application/record number captured per document. |
 
 Because everything lives in a single file, backup is as easy as copying `pdfstream.db`.
 
@@ -63,6 +67,7 @@ Because everything lives in a single file, backup is as easy as copying `pdfstre
 | Lowercased index keywords | Enables case‑insensitive comparison while keeping human‑readable original variants in JSON. |
 | `idx_keywords` index | Speeds exact matches and prefix LIKE (e.g. `keyword LIKE 'coord%'`). Full `%token%` patterns still require scan; future enhancement could add FTS5 or trigram indexing. |
 | Explicit DELETE + ON DELETE CASCADE | Table declares cascade for safety, but code explicitly deletes keyword rows for clarity, deterministic row counts, and backward compatibility with older schema migrations. |
+| In‑memory TF‑IDF similarity | Avoids adding full‑text module; keeps footprint minimal; recomputed vectoriser after corpus changes. |
 | Approximate substring search | Simple LIKE approach keeps logic transparent; prepared statements mitigate injection; upgrade path: FTS5 or external search engine for large corpora. |
 | Potential future improvements | Add FTS5 virtual table, store embeddings for semantic search, introduce incremental indexing for >10k documents. |
 
@@ -104,7 +109,6 @@ Choose either the quick script or manual steps.
 
 ### Option A: Startup Script (Recommended)
 ```bash
-git clone https://github.com/Yining0913/PDFStream.git
 cd PDFStream
 ./start.sh
 ```
@@ -112,7 +116,6 @@ This script creates a virtual environment, installs dependencies, downloads lang
 
 ### Option B: Manual
 ```bash
-git clone https://github.com/Yining0913/PDFStream.git
 cd PDFStream
 python3 -m venv venv
 source venv/bin/activate
@@ -142,7 +145,7 @@ Open: `http://localhost:5000`
 2. Observe status messages while processing occurs.
 3. See document appear in the list (summary only, not full text).
 4. Click a document to trigger similarity search (if implemented in UI) or view details.
-5. Use the text search box for thematic queries.
+5. Use the Keywords by PI section to see a PI’s aggregated keywords; use approximate keyword match to filter by terms.
 6. Open a PDF in a new browser tab via its link.
 7. Edit keywords in the modal when human-curated adjustments are desired.
 
@@ -160,6 +163,7 @@ Open: `http://localhost:5000`
 | Search by text | `POST /api/search` | Body with `query` and `top_n` |
 | Find similar to an existing document | `POST /api/search` | Body with `document_id` |
 | Keyword substring search | `POST /api/search_keyword` | Body with `query` |
+| Aggregated keywords by PI | `POST /api/keywords_by_pi` | Body with `pi_name` (or `query`) and optional `limit` |
 | Replace keyword list | `PATCH /api/document/<id>/keywords` | Accepts list or CSV string |
 | Advanced keyword reprocessing | `POST /api/reprocess_keywords` | Optional `{ "limit": N }` |
 | Delete document | `DELETE /api/document/<id>` | Removes file + record |
@@ -338,6 +342,40 @@ LIMIT ?;
 The actual query is built at runtime based on cleaned tokens; parameters are bound safely with placeholders to avoid injection.
 Tokenisation & Performance: Raw query text is split on non‑alphanumeric boundaries; very short tokens are ignored (<2 chars) to reduce noise. The resulting OR chain of LIKE clauses is acceptable for small/medium corpora; for very large sets consider adding a full‑text index (FTS5) or a separate search service. Input is never concatenated directly—placeholders ensure safe binding.
 
+### 6.10 Aggregated Keywords by PI
+```bash
+curl -X POST http://localhost:5000/api/keywords_by_pi \
+	-H "Content-Type: application/json" \
+	-d '{"pi_name": "Dr Smith", "limit": 50}'
+```
+
+Example response (truncated):
+```json
+{
+	"success": true,
+	"pi_query": "Dr Smith",
+	"count": 23,
+	"keywords": [
+		{"keyword": "machine learning", "total_frequency": 7},
+		{"keyword": "classification", "total_frequency": 5}
+	]
+}
+```
+
+Underlying SQL (aggregating keyword frequencies across matching PI documents):
+```sql
+SELECT dk.keyword, SUM(dk.frequency) AS total_freq
+FROM documents d
+JOIN document_keywords dk ON dk.document_id = d.id
+WHERE LOWER(COALESCE(d.pi_name, '')) LIKE ?
+GROUP BY dk.keyword
+ORDER BY total_freq DESC
+LIMIT ?;  -- optional
+```
+Notes:
+- Matching is case‑insensitive and uses substring `LIKE` on `pi_name` (e.g., `%smith%`).
+- Returns frequency summed across all of the PI’s documents in the library.
+
 ---
 ## 7. Understanding Results
 - **similarity_score**: A number like `0.82` means “82% similar” conceptually.
@@ -347,9 +385,6 @@ Tokenisation & Performance: Raw query text is split on non‑alphanumeric bounda
 	- `extracted`: Simple frequency fallback.
 - **keywords_extracted**: Count of keywords stored for that document.
 
-<!-- ### Additional Result Elements (If Present)
-- **metadata** (upload date, file size, page count): Helps gauge recency & length.
-- **match_count / matched_keywords** (from approximate keyword search): Indicates how many stored keywords partially matched your query, useful for quick filtering. -->
 
 ---
 ## 8. Performance & Limits
@@ -357,16 +392,6 @@ Tokenisation & Performance: Raw query text is split on non‑alphanumeric bounda
 - Maximum files per batch: 500 (can increase).
 - Large scanned/image-only PDFs contain little extractable text; similarity and keywords may be sparse.
 
-<!-- ### Recommended Ranges (Best Practices)
-- **Document count:** Works well from a few dozen up to ~10,000 before considering incremental indexing strategies.
-- **Typical file size:** Prefer under ~50MB for faster ingestion (maximum still 700MB).
-- **Page count sweet spot:** 5–100 pages yield rich enough text without overwhelming processing. -->
-
-<!-- ### Improving Search Quality
-1. Use descriptive multi-word queries (e.g., "distributed task allocation" rather than "task").
-2. Upload complete documents (partial drafts may reduce keyword precision).
-3. Periodically reprocess keywords after large batch additions.
-4. Manually prune outdated or redundant documents. -->
 
 ---
 ## 9. Maintenance Tips

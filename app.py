@@ -131,7 +131,9 @@ def upload_pdf():
             page_count=processed_data['page_count'],
             text_content=processed_data['text'],
             keywords=processed_data['keywords'],
-            keywords_source=processed_data.get('keywords_source','extracted')
+            keywords_source=processed_data.get('keywords_source','extracted'),
+            pi_name=None,
+            application_number=None
         )
         
         # Refresh ML matcher
@@ -254,6 +256,22 @@ def search_keyword():
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 
+@app.route('/api/keywords_by_pi', methods=['POST'])
+def keywords_by_pi():
+    """Return aggregated keywords associated with a given PI name.
+    Accepts JSON with `pi_name` or `query`. Performs case-insensitive substring match.
+    """
+    try:
+        data = request.get_json() or {}
+        pi_query = (data.get('pi_name') or data.get('query') or '').strip()
+        limit = data.get('limit')
+        if not pi_query:
+            return jsonify({'success': False, 'error': 'pi_name or query is required'}), 400
+        results = db.get_keywords_by_pi(pi_query, limit=limit)
+        return jsonify({'success': True, 'pi_query': pi_query, 'keywords': results, 'count': len(results)})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
 @app.route('/pdf/<int:doc_id>', methods=['GET'])
 def serve_pdf(doc_id):
     """Serve the original PDF file in a new tab"""
@@ -294,6 +312,21 @@ def update_keywords(doc_id):
         # Refresh ML matcher so keyword-driven re-weighting future features can use updated keywords if integrated.
         refresh_ml_matcher()
         return jsonify({'success': True, 'document_id': doc_id, 'keywords': doc['keywords'], 'count': len(doc['keywords'])})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/document/<int:doc_id>/meta', methods=['PATCH'])
+def update_document_meta(doc_id):
+    """Update PI name and application number for a document."""
+    try:
+        data = request.get_json() or {}
+        pi_name = data.get('pi_name')
+        application_number = data.get('application_number')
+        ok = db.update_document_meta(doc_id, pi_name, application_number)
+        if not ok:
+            return jsonify({'success': False, 'error': 'Document not found or update failed'}), 404
+        doc = db.get_document(doc_id)
+        return jsonify({'success': True, 'document': doc})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 

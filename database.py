@@ -39,6 +39,8 @@ class DatabaseManager:
                 page_count INTEGER,
                 text_content TEXT,
                 keywords TEXT,
+                pi_name TEXT,
+                application_number TEXT,
                 created_at TEXT NOT NULL
             )
         """)
@@ -70,10 +72,49 @@ class DatabaseManager:
                 conn.commit()
             except Exception:
                 pass
+        # Migration: add owner_id and visibility columns if missing
+        if 'owner_id' not in cols:
+            try:
+                cursor.execute("ALTER TABLE documents ADD COLUMN owner_id INTEGER")
+                conn.commit()
+            except Exception:
+                pass
+        if 'visibility' not in cols:
+            try:
+                cursor.execute("ALTER TABLE documents ADD COLUMN visibility TEXT DEFAULT 'private'")
+                conn.commit()
+            except Exception:
+                pass
+        # Migration: add pi_name and application_number if missing
+        if 'pi_name' not in cols:
+            try:
+                cursor.execute("ALTER TABLE documents ADD COLUMN pi_name TEXT")
+                conn.commit()
+            except Exception:
+                pass
+        if 'application_number' not in cols:
+            try:
+                cursor.execute("ALTER TABLE documents ADD COLUMN application_number TEXT")
+                conn.commit()
+            except Exception:
+                pass
+        # Users table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                email TEXT NOT NULL UNIQUE,
+                password_hash TEXT NOT NULL,
+                role TEXT NOT NULL DEFAULT 'editor',
+                created_at TEXT NOT NULL
+            )
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_users_email ON users(email)")
+        conn.commit()
         conn.close()
     
     def add_document(self, filename: str, filepath: str, file_size: int, 
-                     page_count: int, text_content: str, keywords: List[str], keywords_source: str = 'extracted') -> int:
+                     page_count: int, text_content: str, keywords: List[str], keywords_source: str = 'extracted', owner_id: Optional[int] = None, visibility: str = 'private',
+                     pi_name: Optional[str] = None, application_number: Optional[str] = None) -> int:
         """Add a new document to the database"""
         conn = self.get_connection()
         cursor = conn.cursor()
@@ -83,9 +124,9 @@ class DatabaseManager:
         
         cursor.execute("""
             INSERT INTO documents 
-            (filename, filepath, upload_date, file_size, page_count, text_content, keywords, created_at, keywords_source)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (filename, filepath, now, file_size, page_count, text_content, keywords_json, now, keywords_source))
+            (filename, filepath, upload_date, file_size, page_count, text_content, keywords, pi_name, application_number, created_at, keywords_source, owner_id, visibility)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (filename, filepath, now, file_size, page_count, text_content, keywords_json, pi_name, application_number, now, keywords_source, owner_id, visibility))
         
         document_id = cursor.lastrowid
         
@@ -117,7 +158,7 @@ class DatabaseManager:
         
         cursor.execute("""
                  SELECT id, filename, filepath, upload_date, file_size, page_count, 
-                     text_content, keywords, created_at, keywords_source
+                     text_content, keywords, created_at, keywords_source, owner_id, visibility, pi_name, application_number
             FROM documents WHERE id = ?
         """, (document_id,))
         
@@ -135,7 +176,11 @@ class DatabaseManager:
                 'text_content': row[6],
                 'keywords': json.loads(row[7]) if row[7] else [],
                 'created_at': row[8],
-                'keywords_source': row[9] if len(row) > 9 else 'extracted'
+                'keywords_source': row[9] if len(row) > 9 else 'extracted',
+                'owner_id': row[10] if len(row) > 10 else None,
+                'visibility': row[11] if len(row) > 11 else 'private',
+                'pi_name': row[12] if len(row) > 12 else None,
+                'application_number': row[13] if len(row) > 13 else None
             }
         return None
     
@@ -146,7 +191,7 @@ class DatabaseManager:
         
         query = """
                  SELECT id, filename, filepath, upload_date, file_size, page_count, 
-                     text_content, keywords, created_at, keywords_source
+                     text_content, keywords, created_at, keywords_source, owner_id, visibility, pi_name, application_number
             FROM documents
             ORDER BY created_at DESC
         """
@@ -172,8 +217,29 @@ class DatabaseManager:
                 'text_content': row[6],
                 'keywords': json.loads(row[7]) if row[7] else [],
                 'created_at': row[8],
-                'keywords_source': row[9] if len(row) > 9 else 'extracted'
+                'keywords_source': row[9] if len(row) > 9 else 'extracted',
+                'owner_id': row[10] if len(row) > 10 else None,
+                'visibility': row[11] if len(row) > 11 else 'private',
+                'pi_name': row[12] if len(row) > 12 else None,
+                'application_number': row[13] if len(row) > 13 else None
             })
+            def update_document_meta(self, document_id: int, pi_name: Optional[str], application_number: Optional[str]) -> bool:
+                """Update PI name and application number for a document (nullable)."""
+                conn = self.get_connection()
+                cursor = conn.cursor()
+                try:
+                    cursor.execute("SELECT id FROM documents WHERE id = ?", (document_id,))
+                    if not cursor.fetchone():
+                        conn.close()
+                        return False
+                    cursor.execute("UPDATE documents SET pi_name = ?, application_number = ? WHERE id = ?", (pi_name, application_number, document_id))
+                    conn.commit()
+                    conn.close()
+                    return True
+                except Exception:
+                    conn.rollback()
+                    conn.close()
+                    return False
         
         return documents
     
@@ -304,6 +370,58 @@ class DatabaseManager:
         conn.close()
         return [r[0] for r in rows if r and r[0]]
 
+    def get_keywords_by_pi(self, pi_query: str, limit: Optional[int] = None) -> List[Dict]:
+        """Aggregate keywords for documents associated with a PI name.
+        Performs case-insensitive substring match on `pi_name` and returns
+        a list of { 'keyword': str, 'total_frequency': int } sorted by frequency desc.
+        """
+        if not pi_query or not pi_query.strip():
+            return []
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        try:
+            like = f"%{pi_query.strip().lower()}%"
+            query = """
+                SELECT dk.keyword, SUM(dk.frequency) as total_freq
+                FROM documents d
+                JOIN document_keywords dk ON dk.document_id = d.id
+                WHERE LOWER(COALESCE(d.pi_name, '')) LIKE ?
+                GROUP BY dk.keyword
+                ORDER BY total_freq DESC
+            """
+            if limit is not None:
+                query += " LIMIT ?"
+                cursor.execute(query, (like, limit))
+            else:
+                cursor.execute(query, (like,))
+            rows = cursor.fetchall()
+            result = [{'keyword': r[0], 'total_frequency': int(r[1] or 0)} for r in rows]
+            return result
+        finally:
+            conn.close()
+    def update_document_meta(self, document_id: int, pi_name: Optional[str], application_number: Optional[str]) -> bool:
+        """Update PI name and application number for a document.
+        Returns True if a row was updated, False otherwise.
+        """
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                """
+                UPDATE documents
+                SET pi_name = ?, application_number = ?
+                WHERE id = ?
+                """,
+                (pi_name, application_number, document_id)
+            )
+            affected = cursor.rowcount
+            conn.commit()
+            return affected > 0
+        except Exception:
+            return False
+        finally:
+            conn.close()
+
     def update_document_keywords(self, document_id: int, keywords: List[str]) -> bool:
         """Update keywords for a document, replacing JSON list and keyword index.
         Preserves original casing in documents table; indexes lowercase.
@@ -366,3 +484,45 @@ class DatabaseManager:
             conn.rollback()
             conn.close()
             return False
+
+    # --------------------- User Management ---------------------
+    def create_user(self, email: str, password_hash: str, role: str = 'editor') -> Optional[int]:
+        """Create a new user. Returns user id or None if email exists."""
+        if not email or not password_hash:
+            return None
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        try:
+            now = datetime.now().isoformat()
+            cursor.execute("INSERT INTO users (email, password_hash, role, created_at) VALUES (?, ?, ?, ?)", (email.lower(), password_hash, role, now))
+            uid = cursor.lastrowid
+            conn.commit()
+            conn.close()
+            return uid
+        except Exception:
+            conn.rollback()
+            conn.close()
+            return None
+
+    def get_user_by_email(self, email: str) -> Optional[Dict]:
+        """Retrieve user record by email."""
+        if not email:
+            return None
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, email, password_hash, role, created_at FROM users WHERE email = ?", (email.lower(),))
+        row = cursor.fetchone()
+        conn.close()
+        if row:
+            return {'id': row[0], 'email': row[1], 'password_hash': row[2], 'role': row[3], 'created_at': row[4]}
+        return None
+
+    def get_user_by_id(self, user_id: int) -> Optional[Dict]:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, email, role, created_at FROM users WHERE id = ?", (user_id,))
+        row = cursor.fetchone()
+        conn.close()
+        if row:
+            return {'id': row[0], 'email': row[1], 'role': row[2], 'created_at': row[3]}
+        return None

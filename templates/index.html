@@ -186,6 +186,8 @@
         .btn-danger:hover { background:#c53030; }
         .btn-secondary { background:#4a5568; }
         .btn-secondary:hover { background:#2d3748; }
+        .meta-input { padding:6px 10px; border:2px solid #e2e8f0; border-radius:8px; font-size:12px; }
+        .meta-input:focus { outline:none; border-color:#667eea; }
         /* Modal */
         .modal-backdrop { position:fixed; inset:0; background:rgba(0,0,0,.45); display:none; align-items:center; justify-content:center; z-index:1000; }
         .modal { background:#fff; width:500px; max-width:90%; padding:24px; border-radius:12px; box-shadow:0 10px 25px rgba(0,0,0,.25); }
@@ -314,15 +316,24 @@
             </div>
             
             <div class="card">
-                <h2>🔍 Search Documents</h2>
-                <div id="searchMessage"></div>
-                <textarea class="search-box" id="searchQuery" placeholder="Enter search keywords or paste text to find similar documents..."></textarea>
-                    <div style="display:flex; gap:10px; margin-bottom:10px;">
-                        <button class="btn" id="searchBtn" onclick="searchDocuments()" style="flex:1;">Search</button>
-                        <button class="btn btn-secondary" onclick="clearSearchResults()" style="flex:1;" title="Clear only the displayed search results">Clear Results</button>
-                    </div>
+                <!-- <h2>🔍 Search Documents</h2>
+                    <div id="searchMessage"></div>
+                    <textarea class="search-box" id="searchQuery" placeholder="Enter search keywords or paste text to find similar documents..."></textarea>
+                        <div style="display:flex; gap:10px; margin-bottom:10px;">
+                            <button class="btn" id="searchBtn" onclick="searchDocuments()" style="flex:1;">Search</button>
+                            <button class="btn btn-secondary" onclick="clearSearchResults()" style="flex:1;" title="Clear only the displayed search results">Clear Results</button>
+                        </div> -->
+                <h2>👤 Keywords by PI</h2>
+                <p class="subtitle" style="margin-bottom:10px;">Enter a PI name to see aggregated keywords across their documents.</p>
+                <input type="text" id="piNameInput" class="keyword-search-box" placeholder="e.g., Dr Smith">
+                <div style="display:flex; gap:10px; margin-bottom:10px;">
+                    <button class="btn btn" onclick="keywordsByPI()">Search by PI</button>
+                    <button class="btn btn-secondary" onclick="clearPiResults()">Clear</button>
+                </div>
+                <div id="piMessage"></div>
+                <div id="piKeywordResults" style="margin-top: 10px; max-height:300px; overflow-y:auto;"></div>
                 <hr style="margin:25px 0; border:0; border-top:1px solid #e2e8f0;">
-                <h3 style="margin-bottom:10px; color:#333; font-size:18px;">Match Keyword</h3>
+                <h2 style="margin-bottom:10px; color:#333; font-size:18px;">Match Keyword</h2>
                 <input type="text" id="keywordInput" class="keyword-search-box" placeholder="Enter one or more keywords (space/comma separated)...">
                     <div style="display:flex; gap:10px;">
                         <button class="btn" onclick="keywordSearch()" style="margin-bottom:15px; flex:1;">Approximate Match</button>
@@ -343,6 +354,7 @@
                 </div>
             </div>
         </div>
+        
     </div>
     
     <script>
@@ -387,9 +399,13 @@
                             <div class="keywords">
                                 ${doc.keywords.slice(0, 10).map(kw => `<span class="keyword-tag">${kw}</span>`).join('')}
                             </div>
+                            <div class="document-meta">PI Name: <strong>${doc.pi_name || '-'}</strong> • Application Number: <strong>${doc.application_number || '-'}</strong></div>
                             <div class="doc-actions">
                                <button class="btn btn-small" onclick="openPdf(${doc.id}); event.stopPropagation();" title="Open">Open</button>
                                <button class="btn btn-small btn-secondary" onclick="openEditModal(${doc.id}); event.stopPropagation();" title="Edit Keywords">Edit Keywords</button>
+                               <input class="meta-input" id="pi_${doc.id}" placeholder="PI Name" value="${doc.pi_name || ''}" />
+                               <input class="meta-input" id="app_${doc.id}" placeholder="Application Number" value="${doc.application_number || ''}" />
+                               <button class="btn btn-small" onclick="saveMeta(${doc.id}); event.stopPropagation();">Save Meta</button>
                                <button class="btn btn-small btn-danger" onclick="deleteDocument(${doc.id}); event.stopPropagation();" title="Delete PDF">Delete</button>
                             </div>
                         </div>
@@ -466,6 +482,57 @@
             }
         }
         
+        // Keywords aggregated by PI name
+        async function keywordsByPI(){
+            const raw = document.getElementById('piNameInput').value.trim();
+            const msgDiv = document.getElementById('piMessage');
+            const resultsDiv = document.getElementById('piKeywordResults');
+            if(!raw){
+                msgDiv.innerHTML = `<div class='message error'>Please enter a PI name.</div>`;
+                resultsDiv.innerHTML = '';
+                return;
+            }
+            msgDiv.innerHTML = '';
+            resultsDiv.innerHTML = '<div class="loading"><div class="spinner"></div><p>Fetching keywords...</p></div>';
+            try{
+                const resp = await fetch(`${API_URL}/keywords_by_pi`,{
+                    method:'POST',
+                    headers:{'Content-Type':'application/json'},
+                    body: JSON.stringify({ pi_name: raw })
+                });
+                const data = await resp.json();
+                if(!data.success){
+                    resultsDiv.innerHTML = '';
+                    msgDiv.innerHTML = `<div class='message error'>${data.error||'Request failed'}</div>`;
+                    return;
+                }
+                const items = data.keywords || [];
+                if(items.length===0){
+                    resultsDiv.innerHTML = `<div class='message'>No keywords found for "${data.pi_query}".</div>`;
+                    return;
+                }
+                const html = [`<div class='message success'>Found ${items.length} keyword(s) for "${data.pi_query}".</div>`, '<ul style="list-style:none; padding-left:0;">'];
+                items.forEach(it=>{
+                    html.push(`<li class='document-item' style='display:flex; justify-content:space-between; align-items:center;'>
+                        <span class='document-name'>${it.keyword}</span>
+                        <span class='similarity-score' title='Total frequency across documents'>${it.total_frequency}</span>
+                    </li>`);
+                });
+                html.push('</ul>');
+                resultsDiv.innerHTML = html.join('');
+            }catch(err){
+                console.error('PI keyword fetch error:', err);
+                resultsDiv.innerHTML='';
+                msgDiv.innerHTML = `<div class='message error'>Error: ${err}</div>`;
+            }
+        }
+
+        function clearPiResults(){
+            document.getElementById('piNameInput').value='';
+            document.getElementById('piMessage').innerHTML='';
+            document.getElementById('piKeywordResults').innerHTML='';
+        }
+
         // Search documents
         async function searchDocuments() {
             const query = document.getElementById('searchQuery').value.trim();
@@ -599,6 +666,25 @@
                 }
             } catch (err) {
                 resultsDiv.innerHTML = `<div class=\"message error\">Keyword search failed: ${err.message}</div>`;
+            }
+        }
+
+        async function saveMeta(id){
+            const pi = document.getElementById(`pi_${id}`).value.trim();
+            const app = document.getElementById(`app_${id}`).value.trim();
+            try{
+                const res = await fetch(`${API_URL}/document/${id}/meta`,{
+                    method:'PATCH', headers:{'Content-Type':'application/json'},
+                    body: JSON.stringify({ pi_name: pi || null, application_number: app || null })
+                });
+                const data = await res.json();
+                if(!data.success){
+                    alert(`Update failed: ${data.error || 'Unknown error'}`);
+                    return;
+                }
+                loadDocuments();
+            }catch(err){
+                alert(`Error updating: ${err.message}`);
             }
         }
 
