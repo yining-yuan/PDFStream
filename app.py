@@ -8,6 +8,7 @@ import re
 import mimetypes
 from flask import Flask, request, jsonify, render_template, send_from_directory
 from flask_cors import CORS
+from werkzeug.exceptions import RequestEntityTooLarge
 from werkzeug.utils import secure_filename
 from database import DatabaseManager
 from config import Config
@@ -26,6 +27,18 @@ app.config['MAX_CONTENT_LENGTH'] = Config.MAX_CONTENT_LENGTH  # unified 700MB li
 
 # Ensure upload folder exists
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+
+# Enable CORS (safe even for same-origin; helps if hosted separately)
+CORS(app)
+
+# Return JSON for oversized requests instead of HTML
+@app.errorhandler(RequestEntityTooLarge)
+def handle_413(e):
+    return jsonify({
+        'success': False,
+        'error': 'Request too large',
+        'hint': 'Batch total size exceeds MAX_CONTENT_LENGTH (set in Config). Try fewer files or upload sequentially.'
+    }), 413
 
 # Initialize components
 db = DatabaseManager()
